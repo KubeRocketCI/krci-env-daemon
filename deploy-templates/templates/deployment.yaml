@@ -1,0 +1,110 @@
+{{- include "krci-env-daemon.validateEnvironments" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "krci-env-daemon.fullname" . }}
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+spec:
+  # One replica by design: the activity of the environments lives in its memory and Leases.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "krci-env-daemon.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "krci-env-daemon.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "krci-env-daemon.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: IDLE
+              value: {{ .Values.idle | quote }}
+            - name: WAKE_AFTER_TIMEOUT
+              value: {{ .Values.wakeAfterTimeout | quote }}
+            - name: SCALEDOBJECT_SELECTOR
+              value: {{ .Values.scaledObjectSelector | quote }}
+            {{- if not .Values.watchAllNamespaces }}
+            - name: WATCH_NAMESPACES
+              value: {{ include "krci-env-daemon.watchNamespaces" . | quote }}
+            {{- end }}
+            - name: GATEWAY
+              value: {{ printf "%s/%s" .Values.gateway.namespace .Values.gateway.name | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.goMemLimit | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 8081
+              protocol: TCP
+            - name: grpc-keda
+              containerPort: 9090
+              protocol: TCP
+            - name: grpc-otlp
+              containerPort: 4317
+              protocol: TCP
+          # The listeners start once the informer caches are in sync, at most 45 s.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

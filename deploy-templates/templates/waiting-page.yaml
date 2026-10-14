@@ -1,0 +1,62 @@
+{{- $fullname := include "krci-env-daemon.fullname" . }}
+{{- range .Values.environments }}
+{{- if .route }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-waiting-page
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "krci-env-daemon.labels" $ | nindent 4 }}
+data:
+  response.body: |
+    {{- $.Files.Get "files/waiting-page.html" | nindent 4 }}
+---
+# Envoy answers a request for a route without ready endpoints with its own 503; this
+# policy turns that 503 into the waiting page. A 503 from the application passes through.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ $fullname }}-waiting-page
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "krci-env-daemon.labels" $ | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ .route }}
+  {{- with $.Values.waitingPage.mergeType }}
+  mergeType: {{ . }}
+  {{- end }}
+  responseOverride:
+    - source: Local
+      match:
+        statusCodes:
+          - type: Value
+            value: 503
+      response:
+        contentType: text/html; charset=utf-8
+        header:
+          set:
+            - name: Content-Security-Policy
+              value: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            - name: Cache-Control
+              value: no-store
+            - name: X-Content-Type-Options
+              value: nosniff
+            - name: Referrer-Policy
+              value: no-referrer
+            - name: X-Frame-Options
+              value: DENY
+            - name: Retry-After
+              value: "5"
+        body:
+          type: ValueRef
+          valueRef:
+            group: ""
+            kind: ConfigMap
+            name: {{ $fullname }}-waiting-page
+{{- end }}
+{{- end }}

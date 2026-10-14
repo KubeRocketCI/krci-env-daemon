@@ -1,0 +1,164 @@
+/* Waiting page of a sleeping KubeRocketCI environment: the Portal's sign-in look
+   (photo, scrim, card, dock) with the sign-in form replaced by wake-up progress.
+   Tokens follow krci-portal apps/client/src/tailwind.css. */
+
+:root {
+  color-scheme: light dark;
+  --primary:    oklch(0.6231 0.188 259.8145);
+  --card:       oklch(1 0 0);
+  --foreground: oklch(0.3211 0 0);
+  --muted-fg:   oklch(0.551 0.0234 264.3637);
+  --track:      oklch(0.9276 0.0058 264.5313);
+  --border:     oklch(0.9276 0.0058 264.5313);
+  --starting:   oklch(0.628 0.2 25);
+  --up:         oklch(0.69 0.16 150);
+  --radius:     0.5rem;
+  --fade:       300ms;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --card:       oklch(0.2686 0 0);
+    --foreground: oklch(0.9219 0 0);
+    --muted-fg:   oklch(0.7155 0 0);
+    --track:      oklch(0.3715 0 0);
+    --border:     oklch(0.3715 0 0);
+  }
+}
+:root[data-theme="dark"] {
+  --card:       oklch(0.2686 0 0);
+  --foreground: oklch(0.9219 0 0);
+  --muted-fg:   oklch(0.7155 0 0);
+  --track:      oklch(0.3715 0 0);
+  --border:     oklch(0.3715 0 0);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { background: #0e1116; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--foreground);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+
+.bg { position: fixed; inset: 0; z-index: 0; }
+.bg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.bg .scrim { position: absolute; inset: 0; background: #000; opacity: .5; }
+
+.card {
+  position: relative; z-index: 1;
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 2rem 1.5rem 2.25rem;
+  width: min(32rem, calc(100vw - 2rem));
+  text-align: center;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / .45);
+  animation: rise 420ms cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+.logo { width: 4rem; height: 4rem; margin: 0 auto; display: block; }
+h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
+.tagline { font-size: 1.125rem; font-weight: 700; margin: 0 0 1.6rem; }
+.headline { font-size: 1.05rem; font-weight: 600; margin: 0 0 .35rem; }
+.sub { color: var(--muted-fg); font-size: .875rem; margin: 0; line-height: 1.5; }
+
+/* ---- progress ring: arc = Ready share, sweep = the spinner -------------- */
+@property --pct { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+.ring {
+  --size: 8.5rem;
+  position: relative; width: var(--size); height: var(--size);
+  margin: 0 auto 1.25rem; border-radius: 50%;
+  background: conic-gradient(var(--primary) var(--pct), var(--track) 0);
+  transition: --pct 700ms cubic-bezier(.22, 1, .36, 1);
+}
+.ring::after { content: ""; position: absolute; inset: .65rem; border-radius: 50%; background: var(--card); }
+.ring::before {
+  content: ""; position: absolute; inset: -.35rem; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--primary); opacity: .55;
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.ring .count {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .1rem;
+}
+.count .num { font-size: 1.7rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.count .sep, .count .t { color: var(--muted-fg); font-weight: 500; }
+.count .label { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-fg); }
+
+/* ---- the component that is starting right now --------------------------- */
+.slot {
+  display: flex; align-items: center; justify-content: center; gap: .6rem;
+  min-height: 1.9rem; margin: 0 0 .9rem;
+  transition: opacity var(--fade) ease, transform var(--fade) ease;
+}
+.slot.fade { opacity: 0; transform: translateY(.4rem); }
+.slot .dot {
+  flex: none; width: .72rem; height: .72rem; border-radius: 50%;
+  background: var(--starting);
+  transition: background-color 450ms ease, box-shadow 450ms ease;
+  animation: pulse 1.3s ease-out infinite;
+}
+.slot.fade .dot { transition: none; }
+.slot.up .dot { background: var(--up); animation: none; box-shadow: 0 0 0 .32rem rgb(48 164 108 / .22); }
+.slot .name {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: .95rem; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.slot .state {
+  flex: none; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--starting); transition: color 450ms ease;
+}
+.slot.up .state { color: var(--up); }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgb(229 72 77 / .55); }
+  70%  { box-shadow: 0 0 0 .55rem rgb(229 72 77 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(229 72 77 / 0); }
+}
+
+/* ---- one pip per component ---------------------------------------------- */
+.pips { display: flex; flex-wrap: wrap; gap: .3rem; justify-content: center; min-height: .25rem; margin: 0 0 1.4rem; }
+.pips span { width: 1.35rem; height: .25rem; border-radius: 999px; background: var(--track); transition: background-color 450ms ease; }
+.pips span.on { background: var(--up); }
+.pips span.now { background: var(--starting); animation: breathe 1.3s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+
+.netfail { margin: .9rem 0 0; font-size: .8rem; font-weight: 600; color: var(--starting); }
+.netfail[hidden] { display: none; }
+body.offline .ring::before { animation-play-state: paused; opacity: .12; }
+body.offline .slot .dot, body.offline .pips span.now { animation: none; }
+body.offline .ring { filter: grayscale(.7); }
+
+/* ---- bottom dock, as on the Portal's sign-in page ----------------------- */
+.dock {
+  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); z-index: 50;
+  display: flex; align-items: center; gap: .5rem;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: color-mix(in oklch, var(--card) 80%, transparent);
+  padding: .5rem 1rem; backdrop-filter: blur(4px);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / .2), 0 4px 6px -4px rgb(0 0 0 / .2);
+}
+.dock a, .dock button {
+  height: 2rem; width: 2rem; display: grid; place-items: center;
+  border: 0; padding: 0; border-radius: .375rem;
+  background: transparent; color: var(--foreground); cursor: pointer;
+}
+.dock a:hover, .dock button:hover { background: color-mix(in oklch, var(--foreground) 12%, transparent); }
+.dock a:focus-visible, .dock button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.dock svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+:root[data-theme="dark"] .i-moon, :root:not([data-theme="light"]) .i-moon { display: none; }
+:root[data-theme="dark"] .i-sun, :root:not([data-theme="light"]) .i-sun { display: block; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .i-sun { display: none; }
+  :root:not([data-theme="dark"]) .i-moon { display: block; }
+}
+:root[data-theme="light"] .i-sun { display: none; }
+:root[data-theme="light"] .i-moon { display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ring, .pips span, .slot, .slot .dot, .slot .state { transition: none; }
+  .ring::before, .slot .dot, .pips span.now, .card { animation: none; }
+}

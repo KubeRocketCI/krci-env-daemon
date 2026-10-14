@@ -1,0 +1,27 @@
+apiVersion: v2
+description: A Helm chart for krci-env-daemon, which wakes KubeRocketCI environments that KEDA scaled to zero when they are accessed
+home: https://docs.kuberocketci.io/
+name: krci-env-daemon
+type: application
+version: 0.1.0-SNAPSHOT
+appVersion: 0.1.0-SNAPSHOT
+icon: https://docs.kuberocketci.io/img/logo.svg
+keywords:
+  - kubernetes
+  - kuberocketci
+  - keda
+  - envoy-gateway
+  - scale-to-zero
+maintainers:
+  - name: epmd-edp
+    email: SupportEPMD-EDP@epam.com
+    url: https://solutionshub.epam.com/solution/kuberocketci
+sources:
+  - https://github.com/KubeRocketCI/krci-env-daemon
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: KubeRocketCI Documentation
+      url: https://docs.kuberocketci.io
+    - name: EPAM SolutionHub
+      url: https://solutionshub.epam.com/solution/kuberocketci

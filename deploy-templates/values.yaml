@@ -1,0 +1,103 @@
+# Default values for krci-env-daemon.
+
+nameOverride: "krci-env-daemon"
+fullnameOverride: "krci-env-daemon"
+
+# -- Daemon image. Top-level `image` because the CD Pipeline Operator overrides
+# image.repository and image.tag at this path.
+image:
+  repository: epamedp/krci-env-daemon
+  # -- Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  # -- Create the service account. The daemon needs its token to read the cluster.
+  create: true
+  # -- Annotations to add to the service account.
+  annotations: {}
+  # -- The name of the service account to use. If not set and create is true, a name is
+  # generated using the fullname template.
+  name: ""
+
+# -- How long an environment stays active after its last request. KEDA scales its
+# workloads to zero a `cooldownPeriod` after that.
+idle: 15m
+
+# -- Longest wait for a `krci.epam.com/wake-after` dependency before the dependent
+# workload starts anyway.
+wakeAfterTimeout: 2m
+
+# -- Label selector of the ScaledObjects the daemon drives.
+scaledObjectSelector: krci.epam.com/env-daemon=enabled
+
+# -- Environments the daemon serves. `namespace` gets read access for the daemon,
+# `hostnames` get the waiting page path `/.krci-wake/`, and `route` names the
+# environment's HTTPRoute that shows the waiting page while the environment sleeps.
+environments: []
+# - namespace: team-a
+#   route: krci-portal
+#   hostnames:
+#     - portal-team-a.example.com
+
+# -- Read all namespaces through a ClusterRole instead of a Role in each environment
+# namespace. Any namespace with selected ScaledObjects is then an environment;
+# `environments` is needed only for the waiting page.
+watchAllNamespaces: false
+
+# -- Gateway that the waiting page route attaches to. Only the environment HTTPRoutes this
+# Gateway accepted give their hostnames to the environments.
+gateway:
+  name: main-gateway
+  namespace: envoy-gateway-system
+
+waitingPage:
+  # -- How the waiting page's BackendTrafficPolicy merges with one that targets the
+  # Gateway: `StrategicMerge` or `JSONMerge`. Empty replaces the Gateway's policy for the
+  # environment's route.
+  mergeType: StrategicMerge
+
+networkPolicy:
+  # -- Accept traffic only from Envoy, KEDA and, when set, the metrics namespace.
+  enabled: true
+  # -- Namespace of the Envoy proxies: access log and waiting page requests.
+  envoyNamespace: envoy-gateway-system
+  # -- Namespace of KEDA: external scaler calls.
+  kedaNamespace: keda
+  # -- Namespace allowed to scrape the metrics port. Empty keeps the port closed.
+  metricsNamespace: ""
+
+serviceMonitor:
+  # -- Create a Prometheus Operator ServiceMonitor for the metrics port.
+  enabled: false
+  # -- Scrape interval.
+  interval: 30s
+
+# -- Memory grows with the number of environments, faster with a Role per namespace than
+# with `watchAllNamespaces` (one set of informers per watched namespace). Raise
+# `limits.memory` and `goMemLimit` together for many environments.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# -- Go's soft memory limit (GOMEMLIMIT): the garbage collector works harder as the heap
+# nears it. Keep it about 10% below `resources.limits.memory`.
+goMemLimit: 230MiB
+
+podAnnotations: {}
+
+podLabels: {}
+
+# -- https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+nodeSelector: {}
+
+# -- https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+tolerations: []
+
+# -- https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity
+affinity: {}

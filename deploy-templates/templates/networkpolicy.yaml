@@ -1,0 +1,36 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "krci-env-daemon.fullname" . }}
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "krci-env-daemon.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.envoyNamespace }}
+      ports:
+        - port: http
+        - port: grpc-otlp
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.kedaNamespace }}
+      ports:
+        - port: grpc-keda
+    {{- with .Values.networkPolicy.metricsNamespace }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - port: metrics
+    {{- end }}
+{{- end }}

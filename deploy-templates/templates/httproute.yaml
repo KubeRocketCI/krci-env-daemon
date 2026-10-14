@@ -1,0 +1,28 @@
+{{- $hostnames := list }}
+{{- range .Values.environments }}
+{{- $hostnames = concat $hostnames (.hostnames | default list) }}
+{{- end }}
+{{- if $hostnames }}
+# The waiting page asks for its environment's progress and loads its assets under
+# /.krci-wake/ on the environment's own host.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "krci-env-daemon.fullname" . }}
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      namespace: {{ .Values.gateway.namespace }}
+  hostnames:
+    {{- toYaml (uniq $hostnames) | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.krci-wake/
+      backendRefs:
+        - name: {{ include "krci-env-daemon.fullname" . }}
+          port: 8080
+{{- end }}

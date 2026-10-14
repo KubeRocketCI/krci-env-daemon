@@ -1,0 +1,81 @@
+{{- $fullname := include "krci-env-daemon.fullname" . }}
+{{- if .Values.watchAllNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-read
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+rules:
+  {{- include "krci-env-daemon.readRules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}-read
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "krci-env-daemon.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- else }}
+{{- range splitList "," (include "krci-env-daemon.watchNamespaces" .) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-read
+  namespace: {{ . }}
+  labels:
+    {{- include "krci-env-daemon.labels" $ | nindent 4 }}
+rules:
+  {{- include "krci-env-daemon.readRules" $ | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-read
+  namespace: {{ . }}
+  labels:
+    {{- include "krci-env-daemon.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "krci-env-daemon.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-leases
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-leases
+  labels:
+    {{- include "krci-env-daemon.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-leases
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "krci-env-daemon.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}

@@ -92,41 +92,46 @@ func (m *Manager) Snapshot() []EnvView {
 			continue
 		}
 
-		v := EnvView{
-			Env:              ns,
-			Active:           es.active,
-			Total:            len(env.Targets),
-			PipelinesRunning: m.cluster.PipelineRunning(ns),
-			Wakeups:          es.wakeups,
-			LastWakeReason:   es.why,
-		}
-
-		for _, t := range env.Targets {
-			if m.cluster.Ready(ns, t.Deployment) {
-				v.Ready++
-			}
-
-			if es.active && es.waiting[t.ScaledObject] {
-				v.Waiting = append(v.Waiting, t.Deployment+" (after "+t.After+")")
-			}
-		}
-
-		if !es.lastSeen.IsZero() {
-			v.LastSeen = es.lastSeen.UTC().Format(time.RFC3339)
-			v.LastSeenUnix = float64(es.lastSeen.UnixMilli()) / 1000
-
-			if es.active {
-				v.SleepsIn = (m.opts.Idle - now.Sub(es.lastSeen)).Round(time.Second).String()
-			}
-		}
-
-		if es.coldStart > 0 {
-			v.LastColdStart = es.coldStart.Round(100 * time.Millisecond).String()
-			v.ColdStartSeconds = es.coldStart.Seconds()
-		}
-
-		out = append(out, v)
+		out = append(out, m.view(ns, es, env, now))
 	}
 
 	return out
+}
+
+// view describes one environment. The caller holds m.mu.
+func (m *Manager) view(ns string, es *envState, env *cluster.Env, now time.Time) EnvView {
+	v := EnvView{
+		Env:              ns,
+		Active:           es.active,
+		Total:            len(env.Targets),
+		PipelinesRunning: m.cluster.PipelineRunning(ns),
+		Wakeups:          es.wakeups,
+		LastWakeReason:   es.why,
+	}
+
+	for _, t := range env.Targets {
+		if m.cluster.Ready(ns, t.Deployment) {
+			v.Ready++
+		}
+
+		if es.active && es.waiting[t.ScaledObject] {
+			v.Waiting = append(v.Waiting, t.Deployment+" (after "+t.After+")")
+		}
+	}
+
+	if !es.lastSeen.IsZero() {
+		v.LastSeen = es.lastSeen.UTC().Format(time.RFC3339)
+		v.LastSeenUnix = float64(es.lastSeen.UnixMilli()) / 1000
+
+		if es.active {
+			v.SleepsIn = (m.opts.Idle - now.Sub(es.lastSeen)).Round(time.Second).String()
+		}
+	}
+
+	if es.coldStart > 0 {
+		v.LastColdStart = es.coldStart.Round(100 * time.Millisecond).String()
+		v.ColdStartSeconds = es.coldStart.Seconds()
+	}
+
+	return v
 }

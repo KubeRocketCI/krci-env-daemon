@@ -8,6 +8,7 @@ import (
 
 	collogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -41,34 +42,7 @@ func (r *Receiver) Export(_ context.Context, req *collogs.ExportLogsServiceReque
 	for _, rl := range req.GetResourceLogs() {
 		for _, sl := range rl.GetScopeLogs() {
 			for _, lr := range sl.GetLogRecords() {
-				var host, code string
-
-				for _, kv := range lr.GetAttributes() {
-					switch kv.GetKey() {
-					case "authority", ":authority":
-						host = stringValue(kv.GetValue())
-					case "response_code":
-						code = stringValue(kv.GetValue())
-					}
-				}
-
-				if len(host) > maxAuthority {
-					continue
-				}
-
-				ns := r.Hosts.HostEnv(host)
-				if ns == "" {
-					continue
-				}
-
-				if _, seen := touched[ns]; !seen {
-					why := "request"
-					if isStatusCode(code) {
-						why += " " + code
-					}
-
-					touched[ns] = why
-				}
+				r.note(touched, lr)
 			}
 		}
 	}
@@ -78,6 +52,44 @@ func (r *Receiver) Export(_ context.Context, req *collogs.ExportLogsServiceReque
 	}
 
 	return &collogs.ExportLogsServiceResponse{}, nil
+}
+
+// note records the environment of the request in touched, with the first reason seen.
+func (r *Receiver) note(touched map[string]string, lr *logsv1.LogRecord) {
+	host, code := requestOf(lr)
+	if len(host) > maxAuthority {
+		return
+	}
+
+	ns := r.Hosts.HostEnv(host)
+	if ns == "" {
+		return
+	}
+
+	if _, seen := touched[ns]; seen {
+		return
+	}
+
+	why := "request"
+	if isStatusCode(code) {
+		why += " " + code
+	}
+
+	touched[ns] = why
+}
+
+// requestOf reads the authority and the response code of a record.
+func requestOf(lr *logsv1.LogRecord) (host, code string) {
+	for _, kv := range lr.GetAttributes() {
+		switch kv.GetKey() {
+		case "authority", ":authority":
+			host = stringValue(kv.GetValue())
+		case "response_code":
+			code = stringValue(kv.GetValue())
+		}
+	}
+
+	return host, code
 }
 
 func isStatusCode(code string) bool {

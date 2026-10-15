@@ -28,7 +28,15 @@ type fakeCluster struct {
 	envs      map[string]*cluster.Env
 	ready     map[string]bool // "ns/deployment"
 	up        map[string]bool // "ns/deployment"
+	missing   map[string]bool // "ns/deployment": no such Deployment
 	pipelines map[string]bool
+}
+
+func (f *fakeCluster) Exists(ns, d string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return !f.missing[ns+"/"+d]
 }
 
 func (f *fakeCluster) Env(ns string) *cluster.Env {
@@ -105,7 +113,7 @@ func teamA() *cluster.Env {
 func newTestManager(t *testing.T, envs ...*cluster.Env) (*Manager, *fakeCluster, *clock) {
 	t.Helper()
 
-	fc := &fakeCluster{envs: map[string]*cluster.Env{}, ready: map[string]bool{}, up: map[string]bool{}, pipelines: map[string]bool{}}
+	fc := &fakeCluster{envs: map[string]*cluster.Env{}, ready: map[string]bool{}, up: map[string]bool{}, missing: map[string]bool{}, pipelines: map[string]bool{}}
 	for _, e := range envs {
 		fc.envs[e.Namespace] = e
 	}
@@ -252,6 +260,46 @@ func TestTickPutsIdleEnvironmentToSleep(t *testing.T) {
 	clk.advance(15*time.Minute + time.Second)
 	m.tick(t.Context())
 	require.False(t, active(m, "team-a", "krci-portal"))
+}
+
+func TestTickWakesASleepingEnvironmentForAPipeline(t *testing.T) {
+	m, fc, _ := newTestManager(t, teamA())
+	m.Sync()
+
+	portal, stop := m.Subscribe("team-a", "krci-portal")
+	defer stop()
+
+	fc.set(fc.pipelines, true, "team-a")
+	m.tick(t.Context())
+
+	require.True(t, active(m, "team-a", "krci-portal"), "a pipeline created through the API wakes the environment")
+	require.True(t, signalled(portal))
+	require.Equal(t, "pipeline", m.Snapshot()[0].LastWakeReason)
+}
+
+func TestMissingDeploymentIsNotWaitedFor(t *testing.T) {
+	env := teamA()
+	env.Targets = append(env.Targets, cluster.Target{ScaledObject: "gerrit", Deployment: "gerrit"})
+
+	m, fc, clk := newTestManager(t, env)
+	fc.set(fc.missing, true, "team-a/gerrit")
+	m.Sync()
+	m.Touch("team-a", "request 503")
+	es := m.envs["team-a"]
+
+	clk.advance(4 * time.Second)
+	fc.set(fc.ready, true, "team-a/codebase-operator", "team-a/krci-portal", "team-a/tekton-interceptor", "team-a/el-gitlab")
+	require.True(t, m.advance("team-a", es), "the wake is over without the Deployment that does not exist")
+	require.Equal(t, "4s", m.Snapshot()[0].LastColdStart)
+	require.Equal(t, 4, m.Snapshot()[0].Total)
+
+	var names []string
+	for _, c := range m.Status("team-a").Components {
+		names = append(names, c.Name)
+	}
+
+	require.Len(t, names, 4)
+	require.NotContains(t, names, "gerrit")
 }
 
 func TestSleepNowIgnoresLateRequests(t *testing.T) {

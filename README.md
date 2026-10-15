@@ -16,7 +16,7 @@ flowchart LR
 ```
 
 - **Not in the request path.** Envoy routes to the pods as before and sends the daemon a copy of its access log. The daemon maps the request host to an environment through the environment's HTTPRoutes.
-- **KEDA scales.** The daemon is a KEDA external-push scaler. The first request pushes "active" and the workloads start at once; after the idle window without requests KEDA scales them to zero. A running Tekton pipeline counts as use.
+- **KEDA scales.** The daemon is a KEDA external-push scaler. The first request pushes "active" and the workloads start at once; after the idle window without requests KEDA scales them to zero. A Tekton pipeline counts as use: one created through the API wakes a sleeping environment, a running one keeps the environment awake.
 - **Waiting page.** While a route has no ready endpoints, Envoy answers with a page that shows the workloads starting and opens the original URL when all of them are Ready.
 - **Start order.** The annotation `krci.epam.com/wake-after: <deployment>` on a ScaledObject starts its workload after that Deployment is Ready, or after `wakeAfterTimeout`.
 - **Stateless.** One pod per cluster, no volumes. The state of each environment is kept in a Lease, so a restart changes nothing.
@@ -87,6 +87,7 @@ Chart values: [deploy-templates/README.md](deploy-templates/README.md).
 - An open Portal tab keeps calling the Portal, so it keeps its environment awake.
 - A ScaledObject with the daemon's trigger must scale a Deployment in a namespace the daemon watches. Otherwise the daemon answers with an error, and KEDA keeps the replicas and reports the trigger error.
 - An environment has at most 64 workloads. The access-log sink must send batches below 256 KiB; Envoy's default flush size is 16 KiB.
+- A ScaledObject whose Deployment does not exist is left out: the daemon neither waits for it nor shows it on the waiting page.
 
 ## Develop
 

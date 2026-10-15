@@ -136,6 +136,8 @@ func TestClusterWatchesAllNamespaces(t *testing.T) {
 	require.True(t, c.ScaledUp("team-a", "krci-portal"))
 	require.False(t, c.Ready("team-b", "krci-portal"))
 	require.False(t, c.ScaledUp("team-b", "krci-portal"))
+	require.True(t, c.Exists("team-b", "krci-portal"))
+	require.False(t, c.Exists("team-a", "el-gitlab"), "a ScaledObject without its Deployment")
 	require.True(t, c.PipelineRunning("team-a"))
 	require.False(t, c.PipelineRunning("team-b"))
 }

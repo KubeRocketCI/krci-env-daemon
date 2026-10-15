@@ -28,6 +28,9 @@ const (
 type Cluster interface {
 	Env(ns string) *cluster.Env
 	EnvNames() []string
+	// Exists reports whether the Deployment is in the cluster. A target without one is
+	// neither waited for nor shown: a ScaledObject can outlive its workload.
+	Exists(ns, deployment string) bool
 	Ready(ns, deployment string) bool
 	ScaledUp(ns, deployment string) bool
 	PipelineRunning(ns string) bool
@@ -263,6 +266,11 @@ func (m *Manager) advance(ns string, es *envState) bool {
 	changed, allReady := false, true
 
 	for _, t := range env.Targets {
+		if !m.cluster.Exists(ns, t.Deployment) {
+			delete(es.waiting, t.ScaledObject)
+			continue
+		}
+
 		ready := m.cluster.Ready(ns, t.Deployment)
 		allReady = allReady && ready
 
@@ -346,8 +354,9 @@ func (m *Manager) Subscribe(ns, so string) (<-chan struct{}, func()) {
 	}
 }
 
-// Run counts running pipelines as use, puts idle environments to sleep and saves their
-// state into Leases, until ctx ends.
+// Run counts running pipelines as use (a pipeline created through the API wakes a sleeping
+// environment), puts idle environments to sleep and saves their state into Leases, until
+// ctx ends.
 func (m *Manager) Run(ctx context.Context) {
 	tick := time.NewTicker(tickEvery)
 	defer tick.Stop()
@@ -366,13 +375,17 @@ func (m *Manager) Run(ctx context.Context) {
 func (m *Manager) tick(ctx context.Context) {
 	now := m.now()
 
-	var save []string
+	var wake, save []string
 
 	m.mu.Lock()
 
 	for ns, es := range m.envs {
-		if es.active && m.cluster.PipelineRunning(ns) {
-			es.lastSeen = now
+		if m.cluster.PipelineRunning(ns) {
+			if es.active {
+				es.lastSeen = now
+			} else {
+				wake = append(wake, ns)
+			}
 		}
 
 		if es.active && now.Sub(es.lastSeen) > m.opts.Idle {
@@ -386,6 +399,14 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 
 	m.mu.Unlock()
+
+	for _, ns := range wake {
+		m.touch(ns, "pipeline", false)
+
+		if !slices.Contains(save, ns) {
+			save = append(save, ns)
+		}
+	}
 
 	for _, ns := range save {
 		m.saveLease(ctx, ns)

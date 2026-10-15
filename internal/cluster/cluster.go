@@ -306,6 +306,11 @@ func (c *Cluster) ScaledUp(ns, deployment string) bool {
 	return scaledUp(c.deployment(ns, deployment))
 }
 
+// Exists reports whether the Deployment is in the cluster.
+func (c *Cluster) Exists(ns, deployment string) bool {
+	return c.deployment(ns, deployment) != nil
+}
+
 func scaledUp(d *appsv1.Deployment) bool {
 	return d != nil && ptr.Deref(d.Spec.Replicas, 0) > 0
 }

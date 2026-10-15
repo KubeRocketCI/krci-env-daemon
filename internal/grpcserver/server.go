@@ -110,4 +110,6 @@ func (g *gate) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context 
 
 func (g *gate) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context { return ctx }
 
-func (g *gate) HandleConn(context.Context, stats.ConnStats) {}
+func (g *gate) HandleConn(context.Context, stats.ConnStats) {
+	// Connections carry nothing to count: the gate counts streams.
+}

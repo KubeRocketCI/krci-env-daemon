@@ -89,43 +89,11 @@ func (c hostClaim) precedes(o hostClaim) bool {
 func Build(scaledObjects, routes []*unstructured.Unstructured, selfNamespace, gateway string) Topology {
 	t := Topology{Envs: map[string]*Env{}, Hosts: map[string]string{}}
 
-	scaledObjects = slices.SortedFunc(slices.Values(scaledObjects), func(a, b *unstructured.Unstructured) int {
+	// By name, so that the targets an environment keeps do not depend on the cache order.
+	for _, u := range slices.SortedFunc(slices.Values(scaledObjects), func(a, b *unstructured.Unstructured) int {
 		return cmp.Or(strings.Compare(a.GetNamespace(), b.GetNamespace()), strings.Compare(a.GetName(), b.GetName()))
-	})
-
-	for _, u := range scaledObjects {
-		ns, name := u.GetNamespace(), u.GetName()
-		kind, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "kind")
-		target, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name")
-
-		if target == "" || (kind != "" && kind != "Deployment") {
-			t.Warnings = append(t.Warnings, fmt.Sprintf("ScaledObject %s/%s: ignored, the scale target is not a Deployment", ns, name))
-			continue
-		}
-
-		if len(validation.IsDNS1123Subdomain(target)) > 0 {
-			t.Warnings = append(t.Warnings, fmt.Sprintf("ScaledObject %s/%s: ignored, the scale target name is not a Deployment name", ns, name))
-			continue
-		}
-
-		after := u.GetAnnotations()[WakeAfterAnnotation]
-		if after != "" && (after == target || len(validation.IsDNS1123Label(after)) > 0) {
-			t.Warnings = append(t.Warnings, fmt.Sprintf("ScaledObject %s/%s: ignoring %s=%q", ns, name, WakeAfterAnnotation, after))
-			after = ""
-		}
-
-		env := t.Envs[ns]
-		if env == nil {
-			env = &Env{Namespace: ns}
-			t.Envs[ns] = env
-		}
-
-		if len(env.Targets) == MaxTargets {
-			t.Warnings = append(t.Warnings, fmt.Sprintf("ScaledObject %s/%s: ignored, the environment already has %d workloads", ns, name, MaxTargets))
-			continue
-		}
-
-		env.Targets = append(env.Targets, Target{ScaledObject: name, Deployment: target, After: after})
+	}) {
+		t.addTarget(u)
 	}
 
 	for _, e := range t.Envs {
@@ -134,6 +102,55 @@ func Build(scaledObjects, routes []*unstructured.Unstructured, selfNamespace, ga
 		})
 	}
 
+	t.claimHosts(routes, selfNamespace, gateway)
+	slices.Sort(t.Warnings)
+
+	return t
+}
+
+func (t *Topology) warn(format string, args ...any) {
+	t.Warnings = append(t.Warnings, fmt.Sprintf(format, args...))
+}
+
+// addTarget adds the ScaledObject's workload to its environment, or says why it is ignored.
+func (t *Topology) addTarget(u *unstructured.Unstructured) {
+	ns, name := u.GetNamespace(), u.GetName()
+	kind, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "kind")
+	target, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name")
+
+	if target == "" || (kind != "" && kind != "Deployment") {
+		t.warn("ScaledObject %s/%s: ignored, the scale target is not a Deployment", ns, name)
+		return
+	}
+
+	if len(validation.IsDNS1123Subdomain(target)) > 0 {
+		t.warn("ScaledObject %s/%s: ignored, the scale target name is not a Deployment name", ns, name)
+		return
+	}
+
+	after := u.GetAnnotations()[WakeAfterAnnotation]
+	if after != "" && (after == target || len(validation.IsDNS1123Label(after)) > 0) {
+		t.warn("ScaledObject %s/%s: ignoring %s=%q", ns, name, WakeAfterAnnotation, after)
+		after = ""
+	}
+
+	env := t.Envs[ns]
+	if env == nil {
+		env = &Env{Namespace: ns}
+		t.Envs[ns] = env
+	}
+
+	if len(env.Targets) == MaxTargets {
+		t.warn("ScaledObject %s/%s: ignored, the environment already has %d workloads", ns, name, MaxTargets)
+		return
+	}
+
+	env.Targets = append(env.Targets, Target{ScaledObject: name, Deployment: target, After: after})
+}
+
+// claimHosts gives every hostname of the accepted routes of the environments to one of
+// them.
+func (t *Topology) claimHosts(routes []*unstructured.Unstructured, selfNamespace, gateway string) {
 	claims := map[string]hostClaim{}
 	conflicts := map[string]bool{}
 
@@ -145,9 +162,9 @@ func Build(scaledObjects, routes []*unstructured.Unstructured, selfNamespace, ga
 
 		hostnames, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "hostnames")
 
-		if !slices.ContainsFunc(AcceptedBy(u), func(g string) bool { return gateway == "" || g == gateway }) {
+		if !acceptedBy(u, gateway) {
 			if len(hostnames) > 0 {
-				t.Warnings = append(t.Warnings, fmt.Sprintf("HTTPRoute %s/%s: ignored, the Gateway has not accepted it", ns, u.GetName()))
+				t.warn("HTTPRoute %s/%s: ignored, the Gateway has not accepted it", ns, u.GetName())
 			}
 
 			continue
@@ -156,19 +173,7 @@ func Build(scaledObjects, routes []*unstructured.Unstructured, selfNamespace, ga
 		c := hostClaim{namespace: ns, created: u.GetCreationTimestamp().Time, key: ns + "/" + u.GetName()}
 
 		for _, h := range hostnames {
-			h = NormalizeHost(h)
-			if h == "" || strings.HasPrefix(h, "*") {
-				continue
-			}
-
-			prev, claimed := claims[h]
-			if claimed && prev.namespace != ns {
-				conflicts[h] = true
-			}
-
-			if !claimed || c.precedes(prev) {
-				claims[h] = c
-			}
+			claim(claims, conflicts, h, c)
 		}
 	}
 
@@ -177,12 +182,32 @@ func Build(scaledObjects, routes []*unstructured.Unstructured, selfNamespace, ga
 	}
 
 	for h := range conflicts {
-		t.Warnings = append(t.Warnings, fmt.Sprintf("hostname %s is claimed by several environments; %s keeps it", h, claims[h].key))
+		t.warn("hostname %s is claimed by several environments; %s keeps it", h, claims[h].key)
+	}
+}
+
+// claim gives the host to c unless an older claim holds it, and notes a claim of another
+// environment as a conflict.
+func claim(claims map[string]hostClaim, conflicts map[string]bool, h string, c hostClaim) {
+	h = NormalizeHost(h)
+	if h == "" || strings.HasPrefix(h, "*") {
+		return
 	}
 
-	slices.Sort(t.Warnings)
+	prev, claimed := claims[h]
+	if claimed && prev.namespace != c.namespace {
+		conflicts[h] = true
+	}
 
-	return t
+	if !claimed || c.precedes(prev) {
+		claims[h] = c
+	}
+}
+
+// acceptedBy reports whether gateway accepted the route, or any Gateway when gateway is
+// empty.
+func acceptedBy(route *unstructured.Unstructured, gateway string) bool {
+	return slices.ContainsFunc(AcceptedBy(route), func(g string) bool { return gateway == "" || g == gateway })
 }
 
 // AcceptedBy lists the Gateways, as namespace/name, whose status entry on the HTTPRoute

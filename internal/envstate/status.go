@@ -55,7 +55,9 @@ func (m *Manager) Status(ns string) StatusDoc {
 	})
 
 	for _, t := range order {
-		doc.Components = append(doc.Components, Component{Name: t.Deployment, Ready: m.cluster.Ready(ns, t.Deployment)})
+		if m.cluster.Exists(ns, t.Deployment) {
+			doc.Components = append(doc.Components, Component{Name: t.Deployment, Ready: m.cluster.Ready(ns, t.Deployment)})
+		}
 	}
 
 	return doc
@@ -103,13 +105,18 @@ func (m *Manager) view(ns string, es *envState, env *cluster.Env, now time.Time)
 	v := EnvView{
 		Env:              ns,
 		Active:           es.active,
-		Total:            len(env.Targets),
 		PipelinesRunning: m.cluster.PipelineRunning(ns),
 		Wakeups:          es.wakeups,
 		LastWakeReason:   es.why,
 	}
 
 	for _, t := range env.Targets {
+		if !m.cluster.Exists(ns, t.Deployment) {
+			continue
+		}
+
+		v.Total++
+
 		if m.cluster.Ready(ns, t.Deployment) {
 			v.Ready++
 		}

@@ -5,14 +5,8 @@
  *     the host to learn whether the gateway routes to the workloads yet. The CSP the page
  *     is sent with (connect-src 'self') forbids any other destination.
  *   - Status calls use credentials: 'omit', so the daemon never sees cookies.
- *   - No response data reaches innerHTML. Names must look like a DNS label and
- *     are written with textContent.
- *
- * The ring and the pips show the real state. The slot under the ring walks the
- * components: red while one starts, a smooth turn to green when it is Ready, then a
- * fade to the next one. A component that is already Ready goes before one still
- * starting; otherwise the daemon's order applies. Once every component is Ready the
- * page opens the Portal.
+ *   - No response data reaches innerHTML. Names must be Deployment names (DNS
+ *     subdomains) and are written with textContent.
  */
 (function () {
   "use strict";
@@ -21,13 +15,15 @@
   var POLL_MS = 1000;
   var FAIL_LIMIT = 4;
   var MAX_COMPONENTS = 64;
-  var NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
-  // Every green hold below outlasts the dot's red-to-green transition in wake.css, so the
-  // change of colour is always seen in full.
-  var T_MIN_RED = 500;     // a component that came up quickly still shows red this long
-  var T_GREEN = 950;       // how long a component stays green before the next slides in
-  var T_GREEN_FAST = 700;  // the same, while more components are already up
+  var NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+  var NAME_MAX = 253;
+  // Transition times from wake.css. The green holds below outlast --tint, so the change
+  // of colour is always seen in full.
+  var T_TINT = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tint"));
   var T_FADE = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--fade"));
+  var T_MIN_RED = 500;              // a component that came up quickly still shows red this long
+  var T_GREEN = T_TINT + 500;       // how long a component stays green before the next slides in
+  var T_GREEN_FAST = T_TINT + 250;  // the same, while more components are already up
 
   function $(sel) { return document.querySelector(sel); }
   var ring = $(".ring"), readOut = $(".count .r"), totalOut = $(".count .t");
@@ -43,11 +39,8 @@
   var fails = 0;
   var leaving = false;
 
-  function readyCount() {
-    var n = 0;
-    for (var i = 0; i < comps.length; i++) if (comps[i].ready) n++;
-    return n;
-  }
+  function isReady(i) { return comps[i].ready; }
+  function readyCount() { return comps.filter(function (c) { return c.ready; }).length; }
 
   function paint() {
     var total = comps.length, ready = readyCount();
@@ -70,17 +63,14 @@
   // The next component for the slot: one that is already up goes first, so the
   // slot keeps moving while a slow one starts; otherwise the daemon's order.
   function pickNext() {
-    for (var q = 0; q < queue.length; q++) {
-      if (comps[queue[q]].ready) return queue.splice(q, 1)[0];
-    }
-    return queue.length ? queue.shift() : DONE;
+    if (!queue.length) return DONE;
+    return queue.splice(Math.max(0, queue.findIndex(isReady)), 1)[0];
   }
 
   function enter(i) {
     cur = i;
     shownAt = Date.now();
-    if (i >= 0) setSlot(comps[i].name, false);
-    else setSlot("all components", true);
+    setSlot(i >= 0 ? comps[i].name : "all components", i < 0);
   }
 
   // Moves the slot forward when its component is Ready. Called after every
@@ -88,9 +78,7 @@
   function step() {
     if (busy || leaving || cur < 0 || !comps[cur].ready) return;
     busy = true;
-    var ahead = 0;
-    for (var i = 0; i < queue.length; i++) if (comps[queue[i]].ready) ahead++;
-    var green = ahead > 1 ? T_GREEN_FAST : T_GREEN;
+    var green = queue.filter(isReady).length > 1 ? T_GREEN_FAST : T_GREEN;
     setTimeout(function () {
       slot.classList.add("up");          // the dot glides from red to green
       slotState.textContent = "ready";
@@ -135,7 +123,7 @@
     var out = [];
     for (var i = 0; i < doc.components.length && out.length < MAX_COMPONENTS; i++) {
       var c = doc.components[i];
-      if (c && typeof c.name === "string" && NAME.test(c.name)) out.push({ name: c.name, ready: c.ready === true });
+      if (c && typeof c.name === "string" && c.name.length <= NAME_MAX && NAME.test(c.name)) out.push({ name: c.name, ready: c.ready === true });
     }
     return out;
   }

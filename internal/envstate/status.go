@@ -49,15 +49,13 @@ func (m *Manager) Status(ns string) StatusDoc {
 		return math.MaxInt64
 	}
 
-	order := slices.Clone(env.Targets)
+	order := m.deployed(env)
 	slices.SortStableFunc(order, func(a, b cluster.Target) int {
 		return cmp.Or(cluster.CompareWaits(a, b), cmp.Compare(rank(a), rank(b)))
 	})
 
 	for _, t := range order {
-		if m.cluster.Exists(ns, t.Deployment) {
-			doc.Components = append(doc.Components, Component{Name: t.Deployment, Ready: m.cluster.Ready(ns, t.Deployment)})
-		}
+		doc.Components = append(doc.Components, Component{Name: t.Deployment, Ready: m.cluster.Ready(ns, t.Deployment)})
 	}
 
 	return doc
@@ -110,11 +108,7 @@ func (m *Manager) view(ns string, es *envState, env *cluster.Env, now time.Time)
 		LastWakeReason:   es.why,
 	}
 
-	for _, t := range env.Targets {
-		if !m.cluster.Exists(ns, t.Deployment) {
-			continue
-		}
-
+	for _, t := range m.deployed(env) {
 		v.Total++
 
 		if m.cluster.Ready(ns, t.Deployment) {

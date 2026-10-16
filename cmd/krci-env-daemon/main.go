@@ -18,7 +18,6 @@ import (
 
 	collogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -94,19 +93,15 @@ func run() error {
 	go cl.Run(ctx, state.Sync)
 	go state.Run(ctx)
 
-	g.Go(func() error {
-		return serveGRPC(ctx, config.ScalerPort, grpcserver.Limits{MaxMessage: config.ScalerMaxMessage, MaxStreams: config.ScalerMaxStreams},
-			func(s *grpc.Server) {
-				externalscaler.RegisterExternalScalerServer(s, &scaler.Server{State: state, Stopping: ctx.Done()})
-			})
-	})
-	g.Go(func() error {
-		return serveGRPC(ctx, config.OTLPPort, grpcserver.Limits{MaxMessage: config.OTLPMaxMessage, MaxStreams: config.OTLPMaxStreams},
-			func(s *grpc.Server) {
-				collogs.RegisterLogsServiceServer(s, &otlp.Receiver{Hosts: cl, State: state})
-			})
-	})
-	g.Go(func() error { return serveHTTP(ctx, listenAddr(config.PublicPort), web.Public(state, cl)) })
+	scalerSrv := grpcserver.New(grpcserver.Limits{MaxMessage: config.ScalerMaxMessage, MaxStreams: config.ScalerMaxStreams, MaxConns: config.ScalerMaxConns})
+	externalscaler.RegisterExternalScalerServer(scalerSrv, &scaler.Server{State: state, Stopping: ctx.Done()})
+
+	otlpSrv := grpcserver.New(grpcserver.Limits{MaxMessage: config.OTLPMaxMessage, MaxStreams: config.OTLPMaxStreams, MaxConns: config.OTLPMaxConns})
+	collogs.RegisterLogsServiceServer(otlpSrv, &otlp.Receiver{Hosts: cl, State: state})
+
+	g.Go(func() error { return serveGRPC(ctx, config.ScalerPort, scalerSrv) })
+	g.Go(func() error { return serveGRPC(ctx, config.OTLPPort, otlpSrv) })
+	g.Go(func() error { return serveHTTP(ctx, listenAddr(config.PublicPort), web.PublicHandler(state, cl)) })
 	g.Go(func() error { return serveHTTP(ctx, listenAddr(config.MetricsPort), web.MetricsHandler(state)) })
 	g.Go(func() error { return serveHTTP(ctx, "127.0.0.1"+listenAddr(config.AdminPort), web.AdminHandler(state)) })
 
@@ -116,19 +111,15 @@ func run() error {
 	return g.Wait()
 }
 
-// listenAddr is the address that listens on a port on every interface.
 func listenAddr(port int) string {
 	return fmt.Sprintf(":%d", port)
 }
 
-func serveGRPC(ctx context.Context, port int, limits grpcserver.Limits, register func(*grpc.Server)) error {
+func serveGRPC(ctx context.Context, port int, s *grpcserver.Server) error {
 	lis, err := net.Listen("tcp", listenAddr(port))
 	if err != nil {
 		return err
 	}
-
-	s := grpcserver.New(limits)
-	register(s.Server)
 
 	go func() {
 		<-ctx.Done()

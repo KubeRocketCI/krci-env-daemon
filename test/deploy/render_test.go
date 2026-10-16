@@ -1,13 +1,9 @@
 // Package deploy_test renders the Helm chart with `helm template` and checks the guarantees
-// that live in the chart: read-only access limited to the environments, one replica, the
-// ports and defaults the daemon expects, the network policy, and the waiting page wiring.
-// Without the helm binary the tests skip.
+// that live in the chart. Without the helm binary the tests skip.
 package deploy_test
 
 import (
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,16 +18,10 @@ import (
 	"github.com/KubeRocketCI/krci-env-daemon/internal/web"
 )
 
-const releaseNamespace = "krci-env-daemon"
-
-func chartDir(t *testing.T) string {
-	t.Helper()
-
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-
-	return filepath.Join(filepath.Dir(file), "..", "..", "deploy-templates")
-}
+const (
+	releaseNamespace = "krci-env-daemon"
+	chartDir         = "../../deploy-templates"
+)
 
 func helmTemplate(t *testing.T, values ...string) ([]byte, error) {
 	t.Helper()
@@ -40,7 +30,7 @@ func helmTemplate(t *testing.T, values ...string) ([]byte, error) {
 		t.Skip("helm not installed, skipping chart render tests")
 	}
 
-	args := append([]string{"template", "krci-env-daemon", chartDir(t), "--namespace", releaseNamespace}, values...)
+	args := append([]string{"template", "krci-env-daemon", chartDir, "--namespace", releaseNamespace}, values...)
 
 	return exec.Command("helm", args...).CombinedOutput()
 }
@@ -97,20 +87,27 @@ func namespaceOf(o *unstructured.Unstructured) string {
 	return releaseNamespace
 }
 
+// first returns the first element of the list at the path, which must be a map.
+func first(t *testing.T, obj map[string]any, path ...string) map[string]any {
+	t.Helper()
+
+	list, _, err := unstructured.NestedSlice(obj, path...)
+	require.NoError(t, err)
+	require.NotEmpty(t, list, path)
+
+	m, ok := list[0].(map[string]any)
+	require.True(t, ok, path)
+
+	return m
+}
+
 func container(t *testing.T, objs rendered) map[string]any {
 	t.Helper()
 
 	deploy := objs.find("Deployment", releaseNamespace, "krci-env-daemon")
 	require.NotNil(t, deploy)
 
-	containers, _, err := unstructured.NestedSlice(deploy.Object, "spec", "template", "spec", "containers")
-	require.NoError(t, err)
-	require.Len(t, containers, 1)
-
-	c, ok := containers[0].(map[string]any)
-	require.True(t, ok)
-
-	return c
+	return first(t, deploy.Object, "spec", "template", "spec", "containers")
 }
 
 func envVar(t *testing.T, objs rendered, name string) (string, bool) {
@@ -247,17 +244,10 @@ func TestPortsMatchTheDaemon(t *testing.T) {
 	servicePorts, _, _ := unstructured.NestedSlice(objs.find("Service", releaseNamespace, "krci-env-daemon").Object, "spec", "ports")
 	require.Equal(t, want, ports(t, servicePorts, "port"))
 
-	rules, _, _ := unstructured.NestedSlice(objs.find("HTTPRoute", releaseNamespace, "krci-env-daemon").Object, "spec", "rules")
-	rule, _ := rules[0].(map[string]any)
+	rule := first(t, objs.find("HTTPRoute", releaseNamespace, "krci-env-daemon").Object, "spec", "rules")
+	require.EqualValues(t, config.PublicPort, first(t, rule, "backendRefs")["port"])
 
-	backends, _, _ := unstructured.NestedSlice(rule, "backendRefs")
-	backend, _ := backends[0].(map[string]any)
-	require.EqualValues(t, config.PublicPort, backend["port"])
-
-	path, _, _ := unstructured.NestedSlice(rule, "matches")
-	match, _ := path[0].(map[string]any)
-
-	prefix, _, _ := unstructured.NestedString(match, "path", "value")
+	prefix, _, _ := unstructured.NestedString(first(t, rule, "matches"), "path", "value")
 	require.Equal(t, web.PathPrefix, prefix)
 }
 
@@ -281,9 +271,7 @@ func TestEnvironments(t *testing.T) {
 	btp := objs.find("BackendTrafficPolicy", "team-a", "krci-env-daemon-waiting-page")
 	require.NotNil(t, btp)
 
-	targets, _, _ := unstructured.NestedSlice(btp.Object, "spec", "targetRefs")
-	target, _ := targets[0].(map[string]any)
-	require.Equal(t, "krci-portal", target["name"])
+	require.Equal(t, "krci-portal", first(t, btp.Object, "spec", "targetRefs")["name"])
 
 	merge, _, _ := unstructured.NestedString(btp.Object, "spec", "mergeType")
 	require.Equal(t, "StrategicMerge", merge)
@@ -343,9 +331,7 @@ func TestExistingServiceAccount(t *testing.T) {
 	require.Equal(t, "custom", sa)
 
 	for _, binding := range objs.kinds("RoleBinding") {
-		subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
-		subject, _ := subjects[0].(map[string]any)
-		require.Equal(t, "custom", subject["name"], binding.GetName())
+		require.Equal(t, "custom", first(t, binding.Object, "subjects")["name"], binding.GetName())
 	}
 }
 
@@ -362,11 +348,13 @@ func TestRBACIsReadOnly(t *testing.T) {
 				verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
 				resources := strings.Join(names, ",")
 
-				require.NotContains(t, []string{"secrets", "configmaps", "deployments/scale", "pods/exec"}, resources, role.GetName())
+				for _, n := range names {
+					require.NotContains(t, []string{"secrets", "configmaps", "deployments/scale", "pods/exec"}, n, role.GetName())
+				}
 
 				if resources == "leases" {
 					require.Equal(t, releaseNamespace, namespaceOf(role))
-					require.ElementsMatch(t, []string{"get", "list", "create", "update", "delete"}, verbs)
+					require.ElementsMatch(t, []string{"list", "create", "patch", "delete"}, verbs)
 
 					continue
 				}

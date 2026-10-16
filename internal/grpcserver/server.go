@@ -1,15 +1,19 @@
 // Package grpcserver builds the daemon's gRPC servers with the limits that bound what a
 // client can make them hold: the request size, the streams in flight, the metadata size,
-// and idle connections. Neither listener authenticates its peer; the limits are what
-// stands between a pod that reaches a port and the daemon's memory limit.
+// the open connections, and connections that are idle or stall in the handshake. Neither
+// listener authenticates its peer; the limits are what stands between a pod that reaches a
+// port and the daemon's memory limit.
 package grpcserver
 
 import (
 	"context"
+	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/netutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
@@ -17,6 +21,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/tap"
 )
+
+// handshakeTimeout closes a connection that has not finished the HTTP/2 handshake; until
+// then it holds a MaxConns slot. grpc waits 120 s by default. A variable for the tests.
+var handshakeTimeout = 10 * time.Second
 
 const (
 	maxHeaderList = 8 << 10
@@ -38,12 +46,16 @@ type Limits struct {
 	// MaxStreams is the most streams one connection may open, and the most in flight
 	// across all connections; a stream above it is refused before its request is read.
 	MaxStreams uint32
+	// MaxConns is the most open connections; one above it waits to be accepted. Zero sets
+	// no limit.
+	MaxConns int
 }
 
 // Server is a gRPC server with the limits. Register the services, then call Serve.
 type Server struct {
 	*grpc.Server
-	gate *gate
+	gate     *gate
+	maxConns int
 }
 
 // New returns a server with the limits.
@@ -51,8 +63,10 @@ func New(l Limits) *Server {
 	g := &gate{limit: int64(l.MaxStreams)}
 
 	return &Server{
-		gate: g,
+		gate:     g,
+		maxConns: l.MaxConns,
 		Server: grpc.NewServer(
+			grpc.ConnectionTimeout(handshakeTimeout),
 			grpc.MaxRecvMsgSize(l.MaxMessage),
 			grpc.MaxConcurrentStreams(l.MaxStreams),
 			grpc.MaxHeaderListSize(maxHeaderList),
@@ -64,7 +78,8 @@ func New(l Limits) *Server {
 	}
 }
 
-// Serve serves the registered services on lis.
+// Serve serves lis, limited to MaxConns open connections. It admits streams only for the
+// methods registered before the call.
 func (s *Server) Serve(lis net.Listener) error {
 	s.gate.methods = map[string]bool{}
 
@@ -74,13 +89,18 @@ func (s *Server) Serve(lis net.Listener) error {
 		}
 	}
 
+	if s.maxConns > 0 {
+		lis = netutil.LimitListener(lis, s.maxConns)
+	}
+
 	return s.Server.Serve(lis)
 }
 
 // gate counts the streams in flight across every connection. admit runs before a stream
-// exists and refuses one above the limit; the stats End event of an admitted stream
-// releases its slot. A stream for a method no service serves is refused in admit too,
-// because grpc answers such a stream without an End event.
+// exists and refuses one above the limit, and one for a method no service serves: grpc
+// answers that without an End event, so its slot would never come back. An admitted stream
+// gives its slot back on its End event or, when grpc drops it before its handler because
+// its deadline had already passed on arrival, when that deadline fires.
 type gate struct {
 	limit   int64
 	open    atomic.Int64
@@ -97,12 +117,34 @@ func (g *gate) admit(ctx context.Context, info *tap.Info) (context.Context, erro
 		return nil, status.Error(codes.ResourceExhausted, "too many streams in flight")
 	}
 
-	return ctx, nil
+	release := sync.OnceFunc(func() { g.open.Add(-1) })
+	expired := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			release()
+		}
+	})
+
+	return context.WithValue(ctx, slotKey{}, &slot{release: release, expired: expired}), nil
 }
 
-func (g *gate) HandleRPC(_ context.Context, s stats.RPCStats) {
-	if _, ok := s.(*stats.End); ok {
-		g.open.Add(-1)
+type slotKey struct{}
+
+type slot struct {
+	release func()
+	expired func() bool // stops the deadline watch once the handler holds the stream
+}
+
+func (g *gate) HandleRPC(ctx context.Context, s stats.RPCStats) {
+	sl, _ := ctx.Value(slotKey{}).(*slot)
+	if sl == nil {
+		return
+	}
+
+	switch s.(type) {
+	case *stats.InHeader:
+		sl.expired()
+	case *stats.End:
+		sl.release()
 	}
 }
 

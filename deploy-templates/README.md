@@ -30,11 +30,10 @@ A Helm chart for krci-env-daemon, which wakes KubeRocketCI environments that KED
 | fullnameOverride | string | `"krci-env-daemon"` |  |
 | gateway | object | `{"name":"main-gateway","namespace":"envoy-gateway-system"}` | Gateway that the waiting page route attaches to. Only the environment HTTPRoutes this Gateway accepted give their hostnames to the environments. |
 | goMemLimit | string | `"230MiB"` | Go's soft memory limit (GOMEMLIMIT): the garbage collector works harder as the heap nears it. Keep it about 10% below `resources.limits.memory`. |
-| idle | string | `"15m"` | How long an environment stays active after its last request. KEDA scales its workloads to zero a `cooldownPeriod` after that. |
+| idle | string | `"15m"` | How long an environment stays active after its last use: a request or a running pipeline; at least `1s`. KEDA scales its workloads to zero a `cooldownPeriod` after that. |
 | image | object | `{"pullPolicy":"IfNotPresent","repository":"epamedp/krci-env-daemon","tag":""}` | Daemon image. Top-level `image` because the CD Pipeline Operator overrides image.repository and image.tag at this path. |
 | image.tag | string | `""` | Overrides the image tag whose default is the chart appVersion. |
 | imagePullSecrets | list | `[]` |  |
-| nameOverride | string | `"krci-env-daemon"` |  |
 | networkPolicy.enabled | bool | `true` | Accept traffic only from Envoy, KEDA and, when set, the metrics namespace. |
 | networkPolicy.envoyNamespace | string | `"envoy-gateway-system"` | Namespace of the Envoy proxies: access log and waiting page requests. |
 | networkPolicy.kedaNamespace | string | `"keda"` | Namespace of KEDA: external scaler calls. |

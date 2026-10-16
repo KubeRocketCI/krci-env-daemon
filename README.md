@@ -81,13 +81,19 @@ Envoy Gateway v1.9 or later, KEDA 2.17 or later, and HTTPRoutes for the environm
 
 Chart values: [deploy-templates/README.md](deploy-templates/README.md).
 
+## Admin API
+
+The daemon serves it on the pod's loopback only: `kubectl -n krci-env-daemon port-forward deploy/krci-env-daemon 8082`, then `GET /admin/envs` lists the environments and their state, `POST /admin/sleep?env=<namespace>` puts one to sleep and `POST /admin/wake?env=<namespace>` wakes it.
+
 ## Limitations
 
 - A webhook that reaches a sleeping environment wakes it but is not delivered: send it again once the environment is up.
 - An open Portal tab keeps calling the Portal, so it keeps its environment awake.
 - A ScaledObject with the daemon's trigger must scale a Deployment in a namespace the daemon watches. Otherwise the daemon answers with an error, and KEDA keeps the replicas and reports the trigger error.
-- An environment has at most 64 workloads. The access-log sink must send batches below 256 KiB; Envoy's default flush size is 16 KiB.
-- A ScaledObject whose Deployment does not exist is left out: the daemon neither waits for it nor shows it on the waiting page.
+- Only exact hostnames of HTTPRoutes the Gateway accepted count: a wildcard hostname, a route without hostnames and a route in the daemon's own namespace do not wake an environment.
+- An environment has at most 64 workloads. The access-log sink must send batches below 64 KiB; Envoy's default flush size is 16 KiB.
+- The OTLP listener accepts at most 256 connections and the KEDA listener 64. Envoy opens one OTLP connection per worker thread of each proxy replica; a connection above the limit waits to be accepted, and the requests of that worker wake nothing until it is.
+- A ScaledObject whose Deployment does not exist is left out: the daemon neither waits for it nor shows it on the waiting page, and a workload with that Deployment as its `wake-after` starts at once.
 
 ## Develop
 

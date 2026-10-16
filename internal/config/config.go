@@ -39,23 +39,26 @@ const (
 )
 
 // Limits of the gRPC listeners. A client can make the daemon hold at most MaxStreams
-// requests of MaxMessage bytes at a time; decoding an OTLP batch costs about forty times
-// its wire size in memory. Envoy flushes its access log every 16 KiB or every second
-// (buffer_size_bytes, buffer_flush_interval), and KEDA's requests are a few bytes.
+// requests of MaxMessage bytes at a time; decoding an OTLP batch takes about ten times its
+// wire size in memory for Envoy's records, up to a hundred times for empty ones. Envoy
+// flushes its access log every 16 KiB or every second (buffer_size_bytes,
+// buffer_flush_interval), and KEDA's requests are a few bytes. A connection holds transport
+// buffers before it sends anything; Envoy opens one per worker thread, KEDA one in all.
 const (
-	OTLPMaxMessage   = 256 << 10
+	OTLPMaxMessage   = 64 << 10
 	OTLPMaxStreams   = 16
+	OTLPMaxConns     = 256
 	ScalerMaxMessage = 64 << 10
 	// ScalerMaxStreams bounds the StreamIsActive streams: KEDA holds one per ScaledObject.
 	ScalerMaxStreams = 4096
+	ScalerMaxConns   = 64
 )
 
 // Config is the daemon's runtime configuration.
 type Config struct {
 	// Namespace holds the daemon's Leases (POD_NAMESPACE).
 	Namespace string
-	// Idle is how long an environment stays active after its last request (IDLE). KEDA
-	// scales its workloads to zero a cooldownPeriod after that.
+	// Idle is how long an environment stays active after its last use (IDLE).
 	Idle time.Duration
 	// WakeAfterTimeout is the longest wait for a wake-after dependency before the
 	// dependent workload starts anyway (WAKE_AFTER_TIMEOUT).
@@ -90,11 +93,12 @@ func load(getenv func(string) string) (*Config, error) {
 	}
 
 	var err error
-	if cfg.Idle, err = duration(getenv, "IDLE", DefaultIdle); err != nil {
+	// The Leases keep the idle window in whole seconds.
+	if cfg.Idle, err = duration(getenv, "IDLE", DefaultIdle, time.Second); err != nil {
 		return nil, err
 	}
 
-	if cfg.WakeAfterTimeout, err = duration(getenv, "WAKE_AFTER_TIMEOUT", DefaultWakeAfterTimeout); err != nil {
+	if cfg.WakeAfterTimeout, err = duration(getenv, "WAKE_AFTER_TIMEOUT", DefaultWakeAfterTimeout, 0); err != nil {
 		return nil, err
 	}
 
@@ -121,7 +125,7 @@ func load(getenv func(string) string) (*Config, error) {
 	return cfg, nil
 }
 
-func duration(getenv func(string) string, key string, def time.Duration) (time.Duration, error) {
+func duration(getenv func(string) string, key string, def, least time.Duration) (time.Duration, error) {
 	v := getenv(key)
 	if v == "" {
 		return def, nil
@@ -134,6 +138,10 @@ func duration(getenv func(string) string, key string, def time.Duration) (time.D
 
 	if d <= 0 {
 		return 0, fmt.Errorf("%s: must be positive, got %s", key, v)
+	}
+
+	if d < least {
+		return 0, fmt.Errorf("%s: must be at least %s, got %s", key, least, v)
 	}
 
 	return d, nil

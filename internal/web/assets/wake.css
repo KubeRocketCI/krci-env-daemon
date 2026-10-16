@@ -1,5 +1,4 @@
-/* Waiting page of a sleeping KubeRocketCI environment: the Portal's sign-in look
-   (photo, scrim, card, dock) with the sign-in form replaced by wake-up progress.
+/* Waiting page of a sleeping KubeRocketCI environment, in the look of the Portal's sign-in page.
    Tokens follow krci-portal apps/client/src/tailwind.css. */
 
 :root {
@@ -14,6 +13,7 @@
   --up:         oklch(0.69 0.16 150);
   --radius:     0.5rem;
   --fade:       300ms;
+  --tint:       450ms;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -64,7 +64,7 @@ h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
 .headline { font-size: 1.05rem; font-weight: 600; margin: 0 0 .35rem; }
 .sub { color: var(--muted-fg); font-size: .875rem; margin: 0; line-height: 1.5; }
 
-/* ---- progress ring: arc = Ready share, sweep = the spinner -------------- */
+/* Progress ring: the arc is the Ready share, the sweep is the spinner. */
 @property --pct { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
 .ring {
   --size: 8.5rem;
@@ -88,7 +88,6 @@ h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
 .count .sep, .count .t { color: var(--muted-fg); font-weight: 500; }
 .count .label { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-fg); }
 
-/* ---- the component that is starting right now --------------------------- */
 .slot {
   display: flex; align-items: center; justify-content: center; gap: .6rem;
   min-height: 1.9rem; margin: 0 0 .9rem;
@@ -98,7 +97,7 @@ h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
 .slot .dot {
   flex: none; width: .72rem; height: .72rem; border-radius: 50%;
   background: var(--starting);
-  transition: background-color 450ms ease, box-shadow 450ms ease;
+  transition: background-color var(--tint) ease, box-shadow var(--tint) ease;
   animation: pulse 1.3s ease-out infinite;
 }
 .slot.fade .dot { transition: none; }
@@ -110,7 +109,7 @@ h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
 }
 .slot .state {
   flex: none; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--starting); transition: color 450ms ease;
+  color: var(--starting); transition: color var(--tint) ease;
 }
 .slot.up .state { color: var(--up); }
 @keyframes pulse {
@@ -119,20 +118,17 @@ h1 { font-size: 2.25rem; font-weight: 500; margin: 1rem 0 .25rem; }
   100% { box-shadow: 0 0 0 0 rgb(229 72 77 / 0); }
 }
 
-/* ---- one pip per component ---------------------------------------------- */
 .pips { display: flex; flex-wrap: wrap; gap: .3rem; justify-content: center; min-height: .25rem; margin: 0 0 1.4rem; }
-.pips span { width: 1.35rem; height: .25rem; border-radius: 999px; background: var(--track); transition: background-color 450ms ease; }
+.pips span { width: 1.35rem; height: .25rem; border-radius: 999px; background: var(--track); transition: background-color var(--tint) ease; }
 .pips span.on { background: var(--up); }
 .pips span.now { background: var(--starting); animation: breathe 1.3s ease-in-out infinite; }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
 .netfail { margin: .9rem 0 0; font-size: .8rem; font-weight: 600; color: var(--starting); }
-.netfail[hidden] { display: none; }
 body.offline .ring::before { animation-play-state: paused; opacity: .12; }
 body.offline .slot .dot, body.offline .pips span.now { animation: none; }
 body.offline .ring { filter: grayscale(.7); }
 
-/* ---- bottom dock, as on the Portal's sign-in page ----------------------- */
 .dock {
   position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); z-index: 50;
   display: flex; align-items: center; gap: .5rem;
@@ -149,8 +145,8 @@ body.offline .ring { filter: grayscale(.7); }
 .dock a:hover, .dock button:hover { background: color-mix(in oklch, var(--foreground) 12%, transparent); }
 .dock a:focus-visible, .dock button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .dock svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-:root[data-theme="dark"] .i-moon, :root:not([data-theme="light"]) .i-moon { display: none; }
-:root[data-theme="dark"] .i-sun, :root:not([data-theme="light"]) .i-sun { display: block; }
+:root:not([data-theme="light"]) .i-moon { display: none; }
+:root:not([data-theme="light"]) .i-sun { display: block; }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .i-sun { display: none; }
   :root:not([data-theme="dark"]) .i-moon { display: block; }

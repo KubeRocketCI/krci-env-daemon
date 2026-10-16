@@ -48,6 +48,7 @@ func TestLoadRejects(t *testing.T) {
 		"bad duration":              {map[string]string{"POD_NAMESPACE": "d", "IDLE": "soon"}, "IDLE"},
 		"zero duration":             {map[string]string{"POD_NAMESPACE": "d", "WAKE_AFTER_TIMEOUT": "0s"}, "WAKE_AFTER_TIMEOUT"},
 		"negative duration":         {map[string]string{"POD_NAMESPACE": "d", "IDLE": "-1m"}, "IDLE"},
+		"idle below a second":       {map[string]string{"POD_NAMESPACE": "d", "IDLE": "500ms"}, "IDLE"},
 		"bad selector":              {map[string]string{"POD_NAMESPACE": "d", "SCALEDOBJECT_SELECTOR": "a=b=c"}, "SCALEDOBJECT_SELECTOR"},
 		"bad namespace name":        {map[string]string{"POD_NAMESPACE": "d", "WATCH_NAMESPACES": "Team_A"}, "WATCH_NAMESPACES"},
 		"gateway without namespace": {map[string]string{"POD_NAMESPACE": "d", "GATEWAY": "main-gateway"}, "GATEWAY"},

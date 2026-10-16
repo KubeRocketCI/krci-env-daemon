@@ -11,14 +11,8 @@ import (
 // input, so the number of buckets is bounded by the number of environments.
 type limiter struct {
 	mu      sync.Mutex
-	rate    rate.Limit
-	burst   int
 	now     func() time.Time
 	buckets map[string]*rate.Limiter
-}
-
-func newLimiter(perSecond rate.Limit, burst int, now func() time.Time) *limiter {
-	return &limiter{rate: perSecond, burst: burst, now: now, buckets: map[string]*rate.Limiter{}}
 }
 
 func (l *limiter) allow(key string) bool {
@@ -26,7 +20,7 @@ func (l *limiter) allow(key string) bool {
 
 	b, ok := l.buckets[key]
 	if !ok {
-		b = rate.NewLimiter(l.rate, l.burst)
+		b = rate.NewLimiter(statusRate, statusBurst)
 		l.buckets[key] = b
 	}
 

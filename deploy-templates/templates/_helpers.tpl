@@ -1,14 +1,10 @@
-{{/*
-Expand the name of the chart.
-*/}}
 {{- define "krci-env-daemon.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
-Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
+Truncated at 63 characters, the limit of some Kubernetes name fields (DNS naming spec).
+A release name that contains the chart name is used as the full name.
 */}}
 {{- define "krci-env-daemon.fullname" -}}
 {{- if .Values.fullnameOverride }}
@@ -23,16 +19,10 @@ If release name contains chart name it will be used as a full name.
 {{- end }}
 {{- end }}
 
-{{/*
-Create chart name and version as used by the chart label.
-*/}}
 {{- define "krci-env-daemon.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{/*
-Common labels
-*/}}
 {{- define "krci-env-daemon.labels" -}}
 helm.sh/chart: {{ include "krci-env-daemon.chart" . }}
 {{ include "krci-env-daemon.selectorLabels" . }}
@@ -42,17 +32,11 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
-{{/*
-Selector labels
-*/}}
 {{- define "krci-env-daemon.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "krci-env-daemon.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{/*
-Create the name of the service account to use
-*/}}
 {{- define "krci-env-daemon.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "krci-env-daemon.fullname" .) .Values.serviceAccount.name }}
@@ -70,15 +54,11 @@ or its own namespace when no environment is listed yet.
 {{- range .Values.environments }}
 {{- $namespaces = append $namespaces .namespace }}
 {{- end }}
-{{- if not $namespaces }}
-{{- $namespaces = list .Release.Namespace }}
-{{- end }}
-{{- join "," $namespaces }}
+{{- join "," (default (list .Release.Namespace) $namespaces) }}
 {{- end }}
 
 {{/*
-Fails on environments the templates cannot render: a missing or repeated namespace, or a
-waiting page route without the hostnames that carry its /.krci-wake/ path.
+Fails on environments the templates cannot render.
 */}}
 {{- define "krci-env-daemon.validateEnvironments" -}}
 {{- $seen := list }}

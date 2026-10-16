@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/KubeRocketCI/krci-env-daemon/internal/cluster"
+	"github.com/KubeRocketCI/krci-env-daemon/internal/config"
 	"github.com/KubeRocketCI/krci-env-daemon/internal/envstate"
 )
 
@@ -79,7 +80,7 @@ func do(h http.Handler, method, host, target string, headers ...string) *httptes
 
 func TestStatus(t *testing.T) {
 	st := &fakeState{}
-	h := Public(st, hosts{"portal.team-a.example.com": "team-a"})
+	h := PublicHandler(st, hosts{"portal.team-a.example.com": "team-a"})
 
 	w := do(h, http.MethodGet, "portal.team-a.example.com", PathPrefix+"status")
 	require.Equal(t, http.StatusOK, w.Code)
@@ -101,7 +102,7 @@ func TestStatus(t *testing.T) {
 func TestStatusIsCachedAndRateLimitedPerEnvironment(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	st := &fakeState{}
-	h := public(st, hosts{"a.example.com": "team-a", "b.example.com": "team-b"}, func() time.Time { return now })
+	h := publicHandler(st, hosts{"a.example.com": "team-a", "b.example.com": "team-b"}, func() time.Time { return now })
 
 	for range statusBurst {
 		require.Equal(t, http.StatusOK, do(h, http.MethodGet, "a.example.com", PathPrefix+"status").Code)
@@ -120,7 +121,7 @@ func TestStatusIsCachedAndRateLimitedPerEnvironment(t *testing.T) {
 }
 
 func TestPublicRefusesEverythingElse(t *testing.T) {
-	h := Public(&fakeState{}, hosts{"a.example.com": "team-a"})
+	h := PublicHandler(&fakeState{}, hosts{"a.example.com": "team-a"})
 
 	w := do(h, http.MethodPost, "a.example.com", PathPrefix+"status")
 	require.Equal(t, http.StatusMethodNotAllowed, w.Code)
@@ -138,7 +139,7 @@ func TestPublicRefusesEverythingElse(t *testing.T) {
 }
 
 func TestAssets(t *testing.T) {
-	h := Public(&fakeState{}, hosts{})
+	h := PublicHandler(&fakeState{}, hosts{})
 
 	for name, typ := range assetTypes {
 		w := do(h, http.MethodGet, "any.example.com", PathPrefix+"assets/"+name)
@@ -152,8 +153,7 @@ func TestAssets(t *testing.T) {
 	require.Equal(t, http.StatusOK, do(h, http.MethodGet, "any.example.com", "/healthz").Code)
 }
 
-// TestWaitingPageContract ties the page that Envoy serves and its script to what the
-// daemon serves: the path prefix, the status URL and the asset allowlist.
+// TestWaitingPageContract ties the page that Envoy serves and its script to what the daemon serves.
 func TestWaitingPageContract(t *testing.T) {
 	page, err := os.ReadFile("../../deploy-templates/files/waiting-page.html")
 	require.NoError(t, err)
@@ -181,6 +181,30 @@ func TestWaitingPageContract(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(script), `var STATUS = "`+PathPrefix+`status";`)
 	require.Contains(t, string(script), fmt.Sprintf("var MAX_COMPONENTS = %d;", cluster.MaxTargets), "the page shows every workload an environment can have")
+
+	// The page shows exactly the names the daemon accepts for a Deployment.
+	require.Contains(t, string(script), fmt.Sprintf("var NAME_MAX = %d;", cluster.MaxNameLength))
+	src := regexp.MustCompile(`var NAME = /(.+)/;`).FindSubmatch(script)
+	require.NotNil(t, src, "wake.js defines NAME")
+	name := regexp.MustCompile(string(src[1]))
+	for _, s := range []string{"krci-portal", "el-edp-github", "portal.v2", "a", "-a", "a-", "A", "a..b", ".a", "a.", "a_b", "a/b", ""} {
+		require.Equal(t, cluster.IsDeploymentName(s), name.MatchString(s), s)
+	}
+}
+
+// TestReadmeLimits ties the limits the README promises to their constants.
+func TestReadmeLimits(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	require.NoError(t, err)
+
+	for _, want := range []string{
+		fmt.Sprintf("at most %d workloads", cluster.MaxTargets),
+		fmt.Sprintf("below %d KiB", config.OTLPMaxMessage>>10),
+		fmt.Sprintf("at most %d connections", config.OTLPMaxConns),
+		fmt.Sprintf("the KEDA listener %d", config.ScalerMaxConns),
+	} {
+		require.Contains(t, string(readme), want)
+	}
 }
 
 func TestAdmin(t *testing.T) {

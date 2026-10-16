@@ -27,7 +27,7 @@ jobs:
       - name: Check commit format
         uses: gsactions/commit-message-checker@v2
         with:
-          pattern: '^(EPMDEDP-\d+: (fix|feat|docs|style|refactor|test|chore)(!)?: .+|(chore|build)\(deps\): Bump .+)$'
+          pattern: '^(EPMDEDP-\d+: (fix|feat|docs|style|refactor|test|chore)(!)?: .+|(chore|build)\(deps\): [Bb]ump .+)$'
           error: 'Commit title must match "EPMDEDP-<ID>: <type>: <description>". Example: "EPMDEDP-16058: feat: add feature".'
           excludeDescription: 'true'
           excludeTitle: 'true'

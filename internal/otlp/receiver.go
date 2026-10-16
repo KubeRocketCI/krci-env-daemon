@@ -78,7 +78,6 @@ func (r *Receiver) note(touched map[string]string, lr *logsv1.LogRecord) {
 	touched[ns] = why
 }
 
-// requestOf reads the authority and the response code of a record.
 func requestOf(lr *logsv1.LogRecord) (host, code string) {
 	for _, kv := range lr.GetAttributes() {
 		switch kv.GetKey() {

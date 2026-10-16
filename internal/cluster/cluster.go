@@ -8,7 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -63,9 +63,7 @@ type Cluster struct {
 	gateway       string
 	sources       map[string]*source // by watched namespace; metav1.NamespaceAll when every namespace is watched
 
-	mu   sync.RWMutex
-	topo Topology
-
+	topo atomic.Pointer[Topology]
 	kick chan struct{}
 }
 
@@ -80,6 +78,7 @@ type source struct {
 // New starts the informers and returns once their caches are in sync.
 func New(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interface, opts Options) (*Cluster, error) {
 	c := &Cluster{selfNamespace: opts.Namespace, gateway: opts.Gateway, sources: map[string]*source{}, kick: make(chan struct{}, 1)}
+	c.topo.Store(&Topology{})
 
 	namespaces := opts.WatchNamespaces
 	if len(namespaces) == 0 {
@@ -136,16 +135,20 @@ func (c *Cluster) watch(ctx context.Context, cs kubernetes.Interface, dyn dynami
 		informer  cache.SharedIndexInformer
 		transform cache.TransformFunc
 	}{
-		{deployments.Informer(), slimDeployment},
-		{pods.Informer(), slimPod},
-		{scaledObjects.Informer(), slimScaledObject},
-		{routes.Informer(), slimRoute},
+		{deployments.Informer(), transform(slimDeployment)},
+		{pods.Informer(), transform(slimPod)},
+		{scaledObjects.Informer(), transform(slimScaledObject)},
+		{routes.Informer(), transform(slimRoute)},
 	}
+
+	var synced []cache.InformerSynced
 
 	for _, t := range transforms {
 		if err := t.informer.SetTransform(t.transform); err != nil {
 			return nil, nil, err
 		}
+
+		synced = append(synced, t.informer.HasSynced)
 	}
 
 	handler := cache.ResourceEventHandlerFuncs{
@@ -172,18 +175,11 @@ func (c *Cluster) watch(ctx context.Context, cs kubernetes.Interface, dyn dynami
 		routes:        routes.Lister(),
 	}
 
-	synced := []cache.InformerSynced{
-		deployments.Informer().HasSynced,
-		pods.Informer().HasSynced,
-		scaledObjects.Informer().HasSynced,
-		routes.Informer().HasSynced,
-	}
-
 	return src, synced, nil
 }
 
-// Run rebuilds the topology 300 ms after a ScaledObject or HTTPRoute change, at most once
-// per such window, and then calls onChange, until ctx ends.
+// Run rebuilds the topology one debounce window after a ScaledObject or HTTPRoute change,
+// at most once per window, and then calls onChange, until ctx ends.
 func (c *Cluster) Run(ctx context.Context, onChange func()) {
 	for {
 		select {
@@ -237,12 +233,7 @@ func (c *Cluster) rebuild() {
 
 	t := Build(scaledObjects, routes, c.selfNamespace, c.gateway)
 
-	c.mu.Lock()
-	previous := c.topo.Warnings
-	c.topo = t
-	c.mu.Unlock()
-
-	if !slices.Equal(t.Warnings, previous) {
+	if previous := c.topo.Swap(&t); !slices.Equal(t.Warnings, previous.Warnings) {
 		for _, w := range t.Warnings {
 			slog.Warn("topology", "warning", w)
 		}
@@ -272,26 +263,17 @@ func appendUnstructured(out []*unstructured.Unstructured, l cache.GenericLister)
 
 // Env returns the environment of a namespace, or nil. The result must not be modified.
 func (c *Cluster) Env(ns string) *Env {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.topo.Envs[ns]
+	return c.topo.Load().Envs[ns]
 }
 
 // EnvNames lists the namespaces of all environments, sorted.
 func (c *Cluster) EnvNames() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return slices.Sorted(maps.Keys(c.topo.Envs))
+	return slices.Sorted(maps.Keys(c.topo.Load().Envs))
 }
 
 // HostEnv maps a request host to the namespace of the environment that owns it, or "".
 func (c *Cluster) HostEnv(host string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.topo.Hosts[NormalizeHost(host)]
+	return c.topo.Load().Hosts[NormalizeHost(host)]
 }
 
 // Ready reports whether the Deployment asks for replicas and runs at least one Ready
@@ -347,22 +329,30 @@ func (c *Cluster) deployment(ns, name string) *appsv1.Deployment {
 	return d
 }
 
-// The daemon reads Deployment replicas and readiness, Pod phase, the ScaledObject scale
-// target and wake-after annotation, and the HTTPRoute hostnames and accepting Gateways.
-// The transforms below keep nothing else in the caches: less memory, no pod templates
-// (with their environment variables), trigger metadata or route filters inside the
-// process, and no tenant-set value longer than a Kubernetes name, so that no number of
-// objects in a watched namespace can grow the caches beyond their count.
+// The transforms below keep only what the daemon reads: Deployment replicas and readiness,
+// Pod phase, the ScaledObject scale target and wake-after annotation, and the HTTPRoute
+// hostnames and accepting Gateways. No pod template (environment variables), trigger
+// metadata or route filter stays in the process, and every tenant-set value is clipped to
+// one character over a Kubernetes name, so each cached object has a bounded size.
 
-// maxValue is the longest Deployment name or wake-after value the caches keep.
-const maxValue = validation.DNS1123SubdomainMaxLength
+// MaxNameLength is the longest Deployment name. A longer name or wake-after value is cut to
+// one character more, still invalid, so Build warns about it like about any other bad name.
+const MaxNameLength = validation.DNS1123SubdomainMaxLength
 
-func slimDeployment(obj any) (any, error) {
-	d, ok := obj.(*appsv1.Deployment)
-	if !ok {
+func clip(v string, n int) string { return v[:min(len(v), n)] }
+
+// transform adapts slim to the informer hook; an object of another type passes through.
+func transform[T any](slim func(T) (any, error)) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		if t, ok := obj.(T); ok {
+			return slim(t)
+		}
+
 		return obj, nil
 	}
+}
 
+func slimDeployment(d *appsv1.Deployment) (any, error) {
 	return &appsv1.Deployment{
 		ObjectMeta: slimMeta(d.ObjectMeta),
 		Spec:       appsv1.DeploymentSpec{Replicas: d.Spec.Replicas},
@@ -370,40 +360,30 @@ func slimDeployment(obj any) (any, error) {
 	}, nil
 }
 
-func slimPod(obj any) (any, error) {
-	p, ok := obj.(*corev1.Pod)
-	if !ok {
-		return obj, nil
-	}
-
+func slimPod(p *corev1.Pod) (any, error) {
 	return &corev1.Pod{
 		ObjectMeta: slimMeta(p.ObjectMeta),
 		Status:     corev1.PodStatus{Phase: p.Status.Phase},
 	}, nil
 }
 
-// slimScaledObject keeps the scale target's kind and name and the wake-after annotation.
-// A value longer than a name is dropped, and Build then ignores the ScaledObject.
-func slimScaledObject(obj any) (any, error) {
-	u, ok := obj.(*unstructured.Unstructured)
-	if !ok {
-		return obj, nil
-	}
-
+// slimScaledObject keeps the scale target's kind and name and the wake-after annotation,
+// each clipped.
+func slimScaledObject(u *unstructured.Unstructured) (any, error) {
 	out := slimUnstructured(u)
 
-	if v, ok := u.GetAnnotations()[WakeAfterAnnotation]; ok && len(v) <= maxValue {
-		out.SetAnnotations(map[string]string{WakeAfterAnnotation: v})
+	if v, ok := u.GetAnnotations()[WakeAfterAnnotation]; ok {
+		out.SetAnnotations(map[string]string{WakeAfterAnnotation: clip(v, MaxNameLength+1)})
 	}
 
 	ref := map[string]any{}
 
 	if kind, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "kind"); kind != "" {
-		ref["kind"] = kind[:min(len(kind), validation.DNS1035LabelMaxLength)]
+		ref["kind"] = clip(kind, validation.DNS1035LabelMaxLength)
 	}
 
-	if name, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name"); name != "" && len(name) <= maxValue {
-		ref["name"] = name
+	if name, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name"); name != "" {
+		ref["name"] = clip(name, MaxNameLength+1)
 	}
 
 	return out, unstructured.SetNestedMap(out.Object, ref, "spec", "scaleTargetRef")
@@ -411,12 +391,7 @@ func slimScaledObject(obj any) (any, error) {
 
 // slimRoute keeps the hostnames and the Gateways that accepted the route. The Gateway API
 // CRD bounds the hostnames (16 of at most 253 characters) and the parents (32).
-func slimRoute(obj any) (any, error) {
-	u, ok := obj.(*unstructured.Unstructured)
-	if !ok {
-		return obj, nil
-	}
-
+func slimRoute(u *unstructured.Unstructured) (any, error) {
 	out := slimUnstructured(u)
 
 	if hostnames, found, err := unstructured.NestedStringSlice(u.Object, "spec", "hostnames"); err == nil && found {

@@ -10,6 +10,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	coordinationv1ac "k8s.io/client-go/applyconfigurations/coordination/v1"
 )
 
 const (
@@ -74,31 +75,19 @@ func (m *Manager) saveLease(ctx context.Context, ns string) {
 	ctx, cancel := context.WithTimeout(ctx, leaseTimeout)
 	defer cancel()
 
-	spec := coordinationv1.LeaseSpec{
-		HolderIdentity:       new(leaseHolder),
-		LeaseDurationSeconds: new(int32(m.opts.Idle.Seconds())),
-	}
+	spec := coordinationv1ac.LeaseSpec().
+		WithHolderIdentity(leaseHolder).
+		WithLeaseDurationSeconds(int32(m.opts.Idle.Seconds()))
 
 	if !last.IsZero() {
-		spec.RenewTime = new(metav1.NewMicroTime(last))
+		spec.WithRenewTime(metav1.NewMicroTime(last))
 	}
 
-	name := leasePrefix + ns
+	lease := coordinationv1ac.Lease(leasePrefix+ns, "").
+		WithAnnotations(map[string]string{activeAnnotation: strconv.FormatBool(active)}).
+		WithSpec(spec)
 
-	l, err := m.leases.Get(ctx, name, metav1.GetOptions{})
-
-	switch {
-	case apierrors.IsNotFound(err):
-		l = &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: spec}
-		metav1.SetMetaDataAnnotation(&l.ObjectMeta, activeAnnotation, strconv.FormatBool(active))
-		_, err = m.leases.Create(ctx, l, metav1.CreateOptions{})
-	case err == nil:
-		metav1.SetMetaDataAnnotation(&l.ObjectMeta, activeAnnotation, strconv.FormatBool(active))
-		l.Spec = spec
-		_, err = m.leases.Update(ctx, l, metav1.UpdateOptions{})
-	}
-
-	if err != nil {
+	if _, err := m.leases.Apply(ctx, lease, metav1.ApplyOptions{FieldManager: leaseHolder, Force: true}); err != nil {
 		slog.Warn("save lease", "env", ns, "error", err)
 		return
 	}

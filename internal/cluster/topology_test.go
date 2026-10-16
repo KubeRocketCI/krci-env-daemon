@@ -58,16 +58,11 @@ func patchParent(u *unstructured.Unstructured, i int, patch func(parent map[stri
 }
 
 func unaccepted(ns, name string, at time.Time, hostnames ...string) *unstructured.Unstructured {
-	hs := make([]any, 0, len(hostnames))
-	for _, h := range hostnames {
-		hs = append(hs, h)
-	}
-
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "gateway.networking.k8s.io/v1",
 		"kind":       "HTTPRoute",
-		"spec":       map[string]any{"hostnames": hs},
 	}}
+	_ = unstructured.SetNestedStringSlice(u.Object, hostnames, "spec", "hostnames")
 	u.SetNamespace(ns)
 	u.SetName(name)
 	u.SetCreationTimestamp(metav1.NewTime(at))
@@ -120,8 +115,8 @@ func TestBuildCapsTargets(t *testing.T) {
 	topo := Build(sos, nil, "daemon", testGateway)
 	require.Len(t, topo.Envs["team-a"].Targets, MaxTargets)
 	require.Equal(t, []string{
-		"ScaledObject team-a/app-064: ignored, the environment already has 64 workloads",
-		"ScaledObject team-a/app-065: ignored, the environment already has 64 workloads",
+		fmt.Sprintf("ScaledObject team-a/app-%03d: ignored, the environment already has %d workloads", MaxTargets, MaxTargets),
+		fmt.Sprintf("ScaledObject team-a/app-%03d: ignored, the environment already has %d workloads", MaxTargets+1, MaxTargets),
 	}, topo.Warnings, "the first ones by name stay, whatever the cache order")
 }
 
@@ -136,13 +131,22 @@ func TestBuildIgnoresInvalidWakeAfter(t *testing.T) {
 	topo := Build([]*unstructured.Unstructured{
 		scaledObject("team-a", "a", "a", "Not_A_Name"),
 		scaledObject("team-a", "b", "b", "b"),
+		scaledObject("team-a", "c", "c", strings.Repeat("x", MaxNameLength+1)),
+		scaledObject("team-a", "d", "d", "portal.v2"),
+		scaledObject("team-a", "portal.v2", "portal.v2", ""),
 	}, nil, "daemon", testGateway)
 
+	after := map[string]string{}
 	for _, target := range topo.Envs["team-a"].Targets {
-		require.Empty(t, target.After)
+		after[target.Deployment] = target.After
 	}
 
-	require.Len(t, topo.Warnings, 2)
+	require.Equal(t, map[string]string{"a": "", "b": "", "c": "", "d": "portal.v2", "portal.v2": ""}, after, "a dotted Deployment name is a name, also as a dependency")
+	require.Equal(t, []string{
+		fmt.Sprintf("ScaledObject team-a/a: ignoring %s=%q", WakeAfterAnnotation, "Not_A_Name"),
+		fmt.Sprintf("ScaledObject team-a/b: ignoring %s=%q", WakeAfterAnnotation, "b"),
+		fmt.Sprintf("ScaledObject team-a/c: ignoring %s=%q", WakeAfterAnnotation, strings.Repeat("x", MaxNameLength+1)),
+	}, topo.Warnings)
 }
 
 func TestBuildMapsHosts(t *testing.T) {
@@ -229,14 +233,6 @@ func TestBuildGivesConflictingHostToOldestRoute(t *testing.T) {
 		route("team-a", "portal", created, "shared.example.com"),
 	}, "daemon", testGateway)
 	require.Equal(t, "team-a", tie.Hosts["shared.example.com"])
-}
-
-func TestBuildWarningsStayShort(t *testing.T) {
-	so := scaledObject("team-a", "portal", "krci-portal", strings.Repeat("x", 300))
-
-	topo := Build([]*unstructured.Unstructured{so}, nil, "daemon", testGateway)
-	require.Len(t, topo.Warnings, 1)
-	require.Less(t, len(topo.Warnings[0]), 400, "a warning quotes at most a cached value, never a raw annotation")
 }
 
 func TestNormalizeHost(t *testing.T) {

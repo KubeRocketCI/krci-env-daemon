@@ -112,6 +112,12 @@ func (t *Topology) warn(format string, args ...any) {
 	t.Warnings = append(t.Warnings, fmt.Sprintf(format, args...))
 }
 
+// IsDeploymentName reports whether s can name a Deployment: a DNS-1123 subdomain. The
+// waiting page applies the same rule (NAME and NAME_MAX in wake.js).
+func IsDeploymentName(s string) bool {
+	return len(validation.IsDNS1123Subdomain(s)) == 0
+}
+
 // addTarget adds the ScaledObject's workload to its environment, or says why it is ignored.
 func (t *Topology) addTarget(u *unstructured.Unstructured) {
 	ns, name := u.GetNamespace(), u.GetName()
@@ -123,13 +129,13 @@ func (t *Topology) addTarget(u *unstructured.Unstructured) {
 		return
 	}
 
-	if len(validation.IsDNS1123Subdomain(target)) > 0 {
+	if !IsDeploymentName(target) {
 		t.warn("ScaledObject %s/%s: ignored, the scale target name is not a Deployment name", ns, name)
 		return
 	}
 
 	after := u.GetAnnotations()[WakeAfterAnnotation]
-	if after != "" && (after == target || len(validation.IsDNS1123Label(after)) > 0) {
+	if after != "" && (after == target || !IsDeploymentName(after)) {
 		t.warn("ScaledObject %s/%s: ignoring %s=%q", ns, name, WakeAfterAnnotation, after)
 		after = ""
 	}
@@ -162,7 +168,7 @@ func (t *Topology) claimHosts(routes []*unstructured.Unstructured, selfNamespace
 
 		hostnames, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "hostnames")
 
-		if !acceptedBy(u, gateway) {
+		if !slices.ContainsFunc(AcceptedBy(u), func(g string) bool { return gateway == "" || g == gateway }) {
 			if len(hostnames) > 0 {
 				t.warn("HTTPRoute %s/%s: ignored, the Gateway has not accepted it", ns, u.GetName())
 			}
@@ -202,12 +208,6 @@ func claim(claims map[string]hostClaim, conflicts map[string]bool, h string, c h
 	if !claimed || c.precedes(prev) {
 		claims[h] = c
 	}
-}
-
-// acceptedBy reports whether gateway accepted the route, or any Gateway when gateway is
-// empty.
-func acceptedBy(route *unstructured.Unstructured, gateway string) bool {
-	return slices.ContainsFunc(AcceptedBy(route), func(g string) bool { return gateway == "" || g == gateway })
 }
 
 // AcceptedBy lists the Gateways, as namespace/name, whose status entry on the HTTPRoute

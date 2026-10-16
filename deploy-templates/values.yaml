@@ -1,6 +1,3 @@
-# Default values for krci-env-daemon.
-
-nameOverride: "krci-env-daemon"
 fullnameOverride: "krci-env-daemon"
 
 # -- Daemon image. Top-level `image` because the CD Pipeline Operator overrides
@@ -22,8 +19,8 @@ serviceAccount:
   # generated using the fullname template.
   name: ""
 
-# -- How long an environment stays active after its last request. KEDA scales its
-# workloads to zero a `cooldownPeriod` after that.
+# -- How long an environment stays active after its last use: a request or a running
+# pipeline; at least `1s`. KEDA scales its workloads to zero a `cooldownPeriod` after that.
 idle: 15m
 
 # -- Longest wait for a `krci.epam.com/wake-after` dependency before the dependent

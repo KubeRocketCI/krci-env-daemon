@@ -1,57 +1,40 @@
 {{- $fullname := include "krci-env-daemon.fullname" . }}
-{{- if .Values.watchAllNamespaces }}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ $fullname }}-read
-  labels:
-    {{- include "krci-env-daemon.labels" . | nindent 4 }}
-rules:
-  {{- include "krci-env-daemon.readRules" . | nindent 2 }}
+{{- $scopes := list "" }}
+{{- if not .Values.watchAllNamespaces }}
+{{- $scopes = splitList "," (include "krci-env-daemon.watchNamespaces" .) }}
+{{- end }}
+{{- range $scopes }}
+{{- $kind := ternary "ClusterRole" "Role" (eq . "") }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: {{ $kind }}
 metadata:
   name: {{ $fullname }}-read
-  labels:
-    {{- include "krci-env-daemon.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ $fullname }}-read
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "krci-env-daemon.serviceAccountName" $ }}
-    namespace: {{ $.Release.Namespace }}
-{{- else }}
-{{- range splitList "," (include "krci-env-daemon.watchNamespaces" .) }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ $fullname }}-read
+  {{- with . }}
   namespace: {{ . }}
+  {{- end }}
   labels:
     {{- include "krci-env-daemon.labels" $ | nindent 4 }}
 rules:
   {{- include "krci-env-daemon.readRules" $ | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: {{ $kind }}Binding
 metadata:
   name: {{ $fullname }}-read
+  {{- with . }}
   namespace: {{ . }}
+  {{- end }}
   labels:
     {{- include "krci-env-daemon.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: {{ $kind }}
   name: {{ $fullname }}-read
 subjects:
   - kind: ServiceAccount
     name: {{ include "krci-env-daemon.serviceAccountName" $ }}
     namespace: {{ $.Release.Namespace }}
-{{- end }}
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -63,7 +46,7 @@ metadata:
 rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "list", "create", "update", "delete"]
+    verbs: ["list", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

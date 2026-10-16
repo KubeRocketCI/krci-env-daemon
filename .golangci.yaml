@@ -6,11 +6,6 @@ run:
 linters:
   default: standard
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - misspell
     - revive
 

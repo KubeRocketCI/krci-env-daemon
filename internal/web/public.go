@@ -19,8 +19,8 @@ import (
 const PathPrefix = "/.krci-wake/"
 
 const (
-	// Each open waiting page asks once a second, so the limit allows about 20 of them per
-	// environment; the cache below keeps their cost at one lookup per TTL.
+	// An open waiting page polls once a second (POLL_MS in wake.js), so statusRate bounds
+	// the pages one environment serves.
 	statusRate  rate.Limit = 20 // status requests per second and environment
 	statusBurst            = 40
 	statusTTL              = 500 * time.Millisecond
@@ -48,16 +48,16 @@ type Status interface {
 	Status(ns string) envstate.StatusDoc
 }
 
-// Public serves /healthz and, under PathPrefix, the progress of the environment that owns
-// the request's host, plus the waiting page's assets. The environment comes only from the
-// Host header through the HTTPRoute allowlist; nothing takes parameters or reflects input.
-func Public(state Status, hosts Hosts) http.Handler {
-	return public(state, hosts, time.Now)
+// PublicHandler serves /healthz and, under PathPrefix, the progress of the environment that
+// owns the request's host, plus the waiting page's assets. The environment comes only from
+// the Host header through the HTTPRoute allowlist; nothing takes parameters or reflects input.
+func PublicHandler(state Status, hosts Hosts) http.Handler {
+	return publicHandler(state, hosts, time.Now)
 }
 
-func public(state Status, hosts Hosts, now func() time.Time) http.Handler {
-	limit := newLimiter(statusRate, statusBurst, now)
-	cache := &statusCache{ttl: statusTTL, now: now, items: map[string]cached{}}
+func publicHandler(state Status, hosts Hosts, now func() time.Time) http.Handler {
+	limit := &limiter{now: now, buckets: map[string]*rate.Limiter{}}
+	cache := &statusCache{now: now, items: map[string]cached{}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -80,7 +80,7 @@ func public(state Status, hosts Hosts, now func() time.Time) http.Handler {
 		state.Touch(ns, "waiting page")
 
 		body := cache.get(ns, func() []byte {
-			b, _ := json.Marshal(state.Status(ns)) // StatusDoc holds strings, ints and bools only
+			b, _ := json.Marshal(state.Status(ns)) // StatusDoc holds strings and bools only
 			return b
 		})
 
@@ -110,8 +110,7 @@ func public(state Status, hosts Hosts, now func() time.Time) http.Handler {
 	return hardened(mux)
 }
 
-// hardened sets the same security headers on every public answer, the mux's own 404 and
-// 405 included. Every route is GET-only, so the mux answers other methods with 405.
+// hardened sets the security headers on every public answer, the mux's own 404 and 405 included.
 func hardened(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -129,7 +128,6 @@ func hardened(next http.Handler) http.Handler {
 // while, so many open waiting pages cost one lookup.
 type statusCache struct {
 	mu    sync.Mutex
-	ttl   time.Duration
 	now   func() time.Time
 	items map[string]cached
 }
@@ -144,7 +142,7 @@ func (c *statusCache) get(key string, build func() []byte) []byte {
 	defer c.mu.Unlock()
 
 	now := c.now()
-	if it, ok := c.items[key]; ok && now.Sub(it.at) < c.ttl {
+	if it, ok := c.items[key]; ok && now.Sub(it.at) < statusTTL {
 		return it.body
 	}
 

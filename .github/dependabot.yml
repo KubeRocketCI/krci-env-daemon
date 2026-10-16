@@ -1,7 +1,6 @@
 version: 2
 updates:
-  # prefix must stay lowercase and end with ")" so Dependabot produces
-  # "build(deps): Bump ..." — the exact form pr-validation.yml accepts.
+  # With this prefix Dependabot writes "build(deps): bump ...", which pr-validation.yml accepts.
   - package-ecosystem: gomod
     directory: "/"
     schedule:

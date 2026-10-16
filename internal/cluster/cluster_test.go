@@ -50,8 +50,7 @@ func taskPod(ns, name string, phase corev1.PodPhase) *corev1.Pod {
 	}
 }
 
-// withSecrets adds what the daemon must not cache: trigger metadata, a route filter, a
-// foreign annotation and a long status message.
+// withSecrets adds what the daemon must not cache.
 func withSecrets(u *unstructured.Unstructured) *unstructured.Unstructured {
 	_ = unstructured.SetNestedSlice(u.Object, []any{map[string]any{
 		"type": "external-push", "metadata": map[string]any{"password": "secret"},
@@ -66,13 +65,7 @@ func withSecrets(u *unstructured.Unstructured) *unstructured.Unstructured {
 		patchParent(u, 0, longMessage)
 	}
 
-	annotations := u.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-
-	annotations["kubectl.kubernetes.io/last-applied-configuration"] = strings.Repeat("{", 1024)
-	u.SetAnnotations(annotations)
+	_ = unstructured.SetNestedField(u.Object, strings.Repeat("{", 1024), "metadata", "annotations", "kubectl.kubernetes.io/last-applied-configuration")
 
 	return u
 }
@@ -121,11 +114,20 @@ func options() Options {
 	return Options{Namespace: "daemon", Selector: selector, Gateway: testGateway}
 }
 
-func TestClusterWatchesAllNamespaces(t *testing.T) {
+// newCluster starts a Cluster over the fixtures, and returns the dynamic client they live in.
+func newCluster(t *testing.T, opts Options) (*Cluster, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+
 	cs, dyn := fixtures()
 
-	c, err := New(t.Context(), cs, dyn, options())
+	c, err := New(t.Context(), cs, dyn, opts)
 	require.NoError(t, err)
+
+	return c, dyn
+}
+
+func TestClusterWatchesAllNamespaces(t *testing.T) {
+	c, _ := newCluster(t, options())
 
 	require.Equal(t, []string{"team-a", "team-b"}, c.EnvNames())
 	require.Equal(t, "team-b", c.HostEnv("PORTAL.team-b.example.com:443"))
@@ -143,13 +145,10 @@ func TestClusterWatchesAllNamespaces(t *testing.T) {
 }
 
 func TestClusterWatchesOnlyListedNamespaces(t *testing.T) {
-	cs, dyn := fixtures()
-
 	opts := options()
 	opts.WatchNamespaces = []string{"team-a"}
 
-	c, err := New(t.Context(), cs, dyn, opts)
-	require.NoError(t, err)
+	c, _ := newCluster(t, opts)
 
 	require.Equal(t, []string{"team-a"}, c.EnvNames())
 	require.Equal(t, "team-a", c.HostEnv("portal.team-a.example.com"))
@@ -160,10 +159,7 @@ func TestClusterWatchesOnlyListedNamespaces(t *testing.T) {
 }
 
 func TestClusterKeepsOnlyWhatItReads(t *testing.T) {
-	cs, dyn := fixtures()
-
-	c, err := New(t.Context(), cs, dyn, options())
-	require.NoError(t, err)
+	c, _ := newCluster(t, options())
 
 	d, err := c.source("team-a").deployments.Deployments("team-a").Get("krci-portal")
 	require.NoError(t, err)
@@ -198,10 +194,14 @@ func TestTransformsBoundTenantValues(t *testing.T) {
 	require.NoError(t, err)
 
 	u := so.(*unstructured.Unstructured)
-	require.Empty(t, u.GetAnnotations())
+	require.Len(t, u.GetAnnotations()[WakeAfterAnnotation], MaxNameLength+1)
 
-	_, found, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name")
-	require.False(t, found)
+	name, _, _ := unstructured.NestedString(u.Object, "spec", "scaleTargetRef", "name")
+	require.Len(t, name, MaxNameLength+1)
+
+	topo := Build([]*unstructured.Unstructured{u}, nil, "daemon", testGateway)
+	require.Empty(t, topo.Envs)
+	require.Equal(t, []string{"ScaledObject team-a/big: ignored, the scale target name is not a Deployment name"}, topo.Warnings)
 
 	kept, err := slimScaledObject(scaledObject("team-a", "ok", "krci-portal", "tekton-interceptor"))
 	require.NoError(t, err)
@@ -228,10 +228,7 @@ func TestTransformsBoundTenantValues(t *testing.T) {
 }
 
 func TestClusterRebuildsOnChange(t *testing.T) {
-	cs, dyn := fixtures()
-
-	c, err := New(t.Context(), cs, dyn, options())
-	require.NoError(t, err)
+	c, dyn := newCluster(t, options())
 
 	var notified atomic.Bool
 
@@ -241,7 +238,7 @@ func TestClusterRebuildsOnChange(t *testing.T) {
 		}
 	})
 
-	_, err = dyn.Resource(scaledObjectGVR).Namespace("team-d").Create(t.Context(),
+	_, err := dyn.Resource(scaledObjectGVR).Namespace("team-d").Create(t.Context(),
 		scaledObject("team-d", "portal", "krci-portal", ""), metav1.CreateOptions{})
 	require.NoError(t, err)
 

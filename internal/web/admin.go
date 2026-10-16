@@ -31,22 +31,8 @@ func AdminHandler(state Admin) http.Handler {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(state.Snapshot())
 	})
-	mux.HandleFunc("POST /admin/sleep", func(w http.ResponseWriter, r *http.Request) {
-		if !state.SleepNow(r.URL.Query().Get("env")) {
-			http.NotFound(w, r)
-			return
-		}
-
-		_, _ = fmt.Fprintln(w, "asleep: KEDA scales the workloads to zero after the cooldownPeriod")
-	})
-	mux.HandleFunc("POST /admin/wake", func(w http.ResponseWriter, r *http.Request) {
-		if !state.WakeNow(r.URL.Query().Get("env")) {
-			http.NotFound(w, r)
-			return
-		}
-
-		_, _ = fmt.Fprintln(w, "waking")
-	})
+	mux.HandleFunc("POST /admin/sleep", envAction(state.SleepNow, "asleep: KEDA scales the workloads to zero after the cooldownPeriod"))
+	mux.HandleFunc("POST /admin/wake", envAction(state.WakeNow, "waking"))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "" {
@@ -61,6 +47,18 @@ func AdminHandler(state Admin) http.Handler {
 
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// envAction applies do to the ?env= environment and answers done, or 404 for an unknown one.
+func envAction(do func(ns string) bool, done string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !do(r.URL.Query().Get("env")) {
+			http.NotFound(w, r)
+			return
+		}
+
+		_, _ = fmt.Fprintln(w, done)
+	}
 }
 
 func loopback(hostport string) bool {

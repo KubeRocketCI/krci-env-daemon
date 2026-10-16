@@ -6,11 +6,13 @@ package envstate
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 
 	"github.com/KubeRocketCI/krci-env-daemon/internal/cluster"
@@ -38,8 +40,7 @@ type Cluster interface {
 
 // Options configures a Manager.
 type Options struct {
-	// Idle is how long an environment stays active after its last use. KEDA scales its
-	// workloads to zero a cooldownPeriod after that.
+	// Idle is how long an environment stays active after its last use.
 	Idle time.Duration
 	// WakeAfterTimeout is the longest wait for a wake-after dependency.
 	WakeAfterTimeout time.Duration
@@ -61,6 +62,7 @@ type envState struct {
 	why         string
 	saved       time.Time // last Lease write
 	savedActive bool
+	synced      *cluster.Env // the environment at the last Sync; topologies are never modified
 }
 
 func newEnvState() *envState {
@@ -97,9 +99,10 @@ func New(c Cluster, leases coordinationv1client.LeaseInterface, opts Options) *M
 	return m
 }
 
-// Sync follows a topology change: it adopts new environments, forgets removed ones, and
-// signals KEDA for the targets of active environments, so that a ScaledObject added to an
-// awake environment starts at once.
+// Sync follows a topology change: it adopts new environments, forgets removed ones, drops
+// the waits of ScaledObjects that left, and signals KEDA for the ScaledObjects that joined
+// an awake environment since the last Sync, so that they start at once. KEDA records each
+// signal as a status write, so the targets that already run get none.
 func (m *Manager) Sync() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -115,8 +118,15 @@ func (m *Manager) Sync() {
 			continue
 		}
 
-		if es.active {
-			m.push(env, es)
+		added := slices.DeleteFunc(slices.Clone(env.Targets), func(t cluster.Target) bool {
+			return es.synced != nil && es.synced.Has(t.ScaledObject)
+		})
+		es.synced = env
+
+		maps.DeleteFunc(es.waiting, func(so string, _ bool) bool { return !env.Has(so) })
+
+		if es.active && len(added) > 0 {
+			m.push(&cluster.Env{Namespace: ns, Targets: added}, es)
 		}
 	}
 }
@@ -185,7 +195,8 @@ func (m *Manager) touch(ns, why string, force bool) bool {
 	es.why = why
 	clear(es.waiting)
 
-	if m.allScaledUp(env) {
+	targets := m.deployed(env)
+	if !slices.ContainsFunc(targets, func(t cluster.Target) bool { return !m.cluster.ScaledUp(ns, t.Deployment) }) {
 		// KEDA has not scaled it down yet: no cold start, all of it runs.
 		slog.Info("keep", "env", ns, "why", why)
 		m.push(env, es)
@@ -193,8 +204,8 @@ func (m *Manager) touch(ns, why string, force bool) bool {
 		return true
 	}
 
-	for _, t := range env.Targets {
-		if t.Waits() {
+	for _, t := range targets {
+		if t.Waits() && m.cluster.Exists(ns, t.After) {
 			es.waiting[t.ScaledObject] = true
 		}
 	}
@@ -202,7 +213,7 @@ func (m *Manager) touch(ns, why string, force bool) bool {
 	es.wokeAt, es.coldStart = now, 0
 	clear(es.seenReady)
 	es.wakeups++
-	slog.Info("wake", "env", ns, "why", why, "starting", len(env.Targets)-len(es.waiting), "waiting", len(es.waiting))
+	slog.Info("wake", "env", ns, "why", why, "starting", len(targets)-len(es.waiting), "waiting", len(es.waiting))
 	m.push(env, es)
 
 	if !es.progressing {
@@ -213,9 +224,10 @@ func (m *Manager) touch(ns, why string, force bool) bool {
 	return true
 }
 
-func (m *Manager) allScaledUp(env *cluster.Env) bool {
-	return !slices.ContainsFunc(env.Targets, func(t cluster.Target) bool {
-		return !m.cluster.ScaledUp(env.Namespace, t.Deployment)
+// deployed lists the targets whose Deployment exists.
+func (m *Manager) deployed(env *cluster.Env) []cluster.Target {
+	return slices.DeleteFunc(slices.Clone(env.Targets), func(t cluster.Target) bool {
+		return !m.cluster.Exists(env.Namespace, t.Deployment)
 	})
 }
 
@@ -239,18 +251,13 @@ func (m *Manager) push(env *cluster.Env, es *envState) {
 }
 
 func (m *Manager) progress(ns string, es *envState) {
-	tick := time.NewTicker(progressEvery)
-	defer tick.Stop()
-
-	for range tick.C {
-		if m.advance(ns, es) {
-			return
-		}
-	}
+	_ = wait.PollUntilContextCancel(context.Background(), progressEvery, false, func(context.Context) (bool, error) {
+		return m.advance(ns, es), nil
+	})
 }
 
-// advance starts the workloads whose wake-after dependency is Ready or whose wait timed
-// out, and records when each workload became Ready. It reports whether the wake of es is
+// advance starts the workloads whose wake-after dependency is Ready or has no Deployment,
+// or whose wait timed out, and records when each workload became Ready. It reports whether the wake of es is
 // over; it is also over when es no longer belongs to the namespace.
 func (m *Manager) advance(ns string, es *envState) bool {
 	m.mu.Lock()
@@ -263,12 +270,13 @@ func (m *Manager) advance(ns string, es *envState) bool {
 	}
 
 	now := m.now()
-	changed, allReady := false, true
+	changed, allReady, waiting := false, true, false
 
 	for _, t := range env.Targets {
 		ready, released := m.advanceTarget(ns, es, t, now)
 		allReady = allReady && ready
 		changed = changed || released
+		waiting = waiting || es.waiting[t.ScaledObject]
 	}
 
 	if changed {
@@ -284,15 +292,20 @@ func (m *Manager) advance(ns string, es *envState) bool {
 		slog.Info("awake", "env", ns, "coldStart", es.coldStart.Round(100*time.Millisecond).String())
 	}
 
+	// A waiting workload that was still up counts as Ready, so allReady alone would end the
+	// wake before its wait is released or times out.
+	if waiting {
+		return false
+	}
+
 	es.progressing = false
 
 	return true
 }
 
 // advanceTarget records when the target became Ready and releases it from waiting once
-// its dependency is Ready or the wait timed out. It reports whether the target is Ready
-// and whether it was released. A target without a Deployment never waits and counts as
-// Ready: the wake does not depend on it. The caller holds m.mu.
+// its dependency is Ready or has no Deployment, or the wait timed out. A target without a
+// Deployment counts as Ready. The caller holds m.mu.
 func (m *Manager) advanceTarget(ns string, es *envState, t cluster.Target, now time.Time) (ready, released bool) {
 	if !m.cluster.Exists(ns, t.Deployment) {
 		delete(es.waiting, t.ScaledObject)
@@ -305,7 +318,7 @@ func (m *Manager) advanceTarget(ns string, es *envState, t cluster.Target, now t
 		es.readyAfter[t.Deployment] = now.Sub(es.wokeAt)
 	}
 
-	if es.waiting[t.ScaledObject] && (m.cluster.Ready(ns, t.After) || now.Sub(es.wokeAt) > m.opts.WakeAfterTimeout) {
+	if es.waiting[t.ScaledObject] && (!m.cluster.Exists(ns, t.After) || m.cluster.Ready(ns, t.After) || now.Sub(es.wokeAt) > m.opts.WakeAfterTimeout) {
 		delete(es.waiting, t.ScaledObject)
 		slog.Info("release", "env", ns, "target", t.Deployment, "after", t.After)
 
@@ -369,68 +382,41 @@ func (m *Manager) Subscribe(ns, so string) (<-chan struct{}, func()) {
 // environment), puts idle environments to sleep and saves their state into Leases, until
 // ctx ends.
 func (m *Manager) Run(ctx context.Context) {
-	tick := time.NewTicker(tickEvery)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-
+	_ = wait.PollUntilContextCancel(ctx, tickEvery, false, func(ctx context.Context) (bool, error) {
 		m.tick(ctx)
-	}
+		return false, nil
+	})
 }
 
 func (m *Manager) tick(ctx context.Context) {
+	for _, ns := range m.cluster.EnvNames() {
+		if m.cluster.PipelineRunning(ns) {
+			m.Touch(ns, "pipeline")
+		}
+	}
+
 	now := m.now()
 
-	var wakes, saves []string
+	var saves []string
 
 	m.mu.Lock()
 
 	for ns, es := range m.envs {
-		wake, save := m.tickEnv(ns, es, now)
-
-		if wake {
-			wakes = append(wakes, ns)
+		if es.active && now.Sub(es.lastSeen) > m.opts.Idle {
+			es.active = false
+			slog.Info("sleep", "env", ns, "idleFor", now.Sub(es.lastSeen).Round(time.Second).String())
 		}
 
-		if wake || save {
+		if es.active != es.savedActive || (es.active && now.Sub(es.saved) > leaseEvery) {
 			saves = append(saves, ns)
 		}
 	}
 
 	m.mu.Unlock()
 
-	for _, ns := range wakes {
-		m.touch(ns, "pipeline", false)
-	}
-
 	for _, ns := range saves {
 		m.saveLease(ctx, ns)
 	}
-}
-
-// tickEnv applies one tick to an environment: a running pipeline keeps it awake, the idle
-// window puts it to sleep. It reports whether a pipeline should wake the sleeping
-// environment and whether its Lease is due. The caller holds m.mu.
-func (m *Manager) tickEnv(ns string, es *envState, now time.Time) (wake, save bool) {
-	running := m.cluster.PipelineRunning(ns)
-	if running && es.active {
-		es.lastSeen = now
-	}
-
-	if es.active && now.Sub(es.lastSeen) > m.opts.Idle {
-		es.active = false
-		slog.Info("sleep", "env", ns, "idleFor", now.Sub(es.lastSeen).Round(time.Second).String())
-	}
-
-	wake = running && !es.active
-	save = es.active != es.savedActive || (es.active && now.Sub(es.saved) > leaseEvery)
-
-	return wake, save
 }
 
 // SleepNow puts an environment to sleep at once; KEDA scales its workloads to zero after

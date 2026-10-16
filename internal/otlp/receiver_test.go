@@ -56,11 +56,12 @@ func TestExportTouchesEachEnvironmentOncePerBatch(t *testing.T) {
 func TestExportKeepsOnlyWhatLooksLikeARequest(t *testing.T) {
 	var got touches
 
-	r := &Receiver{Hosts: hosts{"portal.team-a.example.com": "team-a", "portal.team-b.example.com": "team-b"}, State: &got}
+	long := strings.Repeat("a", 300) + ".example.com"
+	r := &Receiver{Hosts: hosts{"portal.team-a.example.com": "team-a", "portal.team-b.example.com": "team-b", long: "team-c"}, State: &got}
 
 	_, err := r.Export(t.Context(), batch(
 		[]*commonv1.KeyValue{str("authority", "portal.team-a.example.com"), str("response_code", strings.Repeat("5", 4000))},
-		[]*commonv1.KeyValue{str("authority", strings.Repeat("a", 300)+".example.com"), str("response_code", "200")},
+		[]*commonv1.KeyValue{str("authority", long), str("response_code", "200")},
 		[]*commonv1.KeyValue{str("authority", "portal.team-b.example.com"), str("response_code", "+42")},
 	))
 	require.NoError(t, err)

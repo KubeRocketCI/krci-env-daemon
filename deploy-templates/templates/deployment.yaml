@@ -72,7 +72,8 @@ spec:
             - name: grpc-otlp
               containerPort: 4317
               protocol: TCP
-          # The listeners start once the informer caches are in sync, at most 45 s.
+          # The listeners start once the informer caches are in sync and the Leases are
+          # loaded; the daemon gives up on both before this window ends.
           startupProbe:
             httpGet:
               path: /healthz

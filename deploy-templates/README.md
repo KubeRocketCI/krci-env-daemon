@@ -1,9 +1,6 @@
 # krci-env-daemon
 
-
-
-
-![Version: 0.1.0-SNAPSHOT](https://img.shields.io/badge/Version-0.1.0--SNAPSHOT-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0-SNAPSHOT](https://img.shields.io/badge/AppVersion-0.1.0--SNAPSHOT-informational?style=flat-square) 
+![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
 
 A Helm chart for krci-env-daemon, which wakes KubeRocketCI environments that KEDA scaled to zero when they are accessed
 
@@ -18,8 +15,6 @@ A Helm chart for krci-env-daemon, which wakes KubeRocketCI environments that KED
 ## Source Code
 
 * <https://github.com/KubeRocketCI/krci-env-daemon>
-
-
 
 ## Values
 
